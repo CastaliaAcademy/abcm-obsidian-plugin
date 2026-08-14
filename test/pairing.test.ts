@@ -11,9 +11,11 @@ describe('scoped Obsidian device pairing', () => {
 		let capturedBodyText = '{}';
 		const transport: HttpTransport = {
 			request(request) {
-				capturedBodyText = request.body;
+				capturedBodyText = request.body ?? '';
 				return Promise.resolve({
 					status: 200,
+					headers: {},
+					arrayBuffer: new ArrayBuffer(0),
 					json: {
 						deviceId: 'device_00000001',
 						credential: 'obs_device_secret_that_never_enters_settings',

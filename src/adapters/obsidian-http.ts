@@ -7,10 +7,16 @@ export class ObsidianHttpTransport implements HttpTransport {
 			url: request.url,
 			method: request.method,
 			headers: request.headers,
-			contentType: 'application/json',
-			body: request.body,
+			...(request.body === undefined
+				? {}
+				: { contentType: 'application/json', body: request.body }),
 			throw: false,
 		});
-		return { status: response.status, json: response.json };
+		return {
+			status: response.status,
+			headers: response.headers,
+			json: response.json,
+			arrayBuffer: response.arrayBuffer,
+		};
 	}
 }

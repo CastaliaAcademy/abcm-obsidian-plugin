@@ -1,13 +1,15 @@
 export interface HttpRequest {
 	url: string;
-	method: 'POST';
+	method: 'GET' | 'POST';
 	headers: Record<string, string>;
-	body: string;
+	body?: string;
 }
 
 export interface HttpResponse {
 	status: number;
+	headers: Record<string, string>;
 	json: unknown;
+	arrayBuffer: ArrayBuffer;
 }
 
 export interface HttpTransport {

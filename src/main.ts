@@ -1,5 +1,12 @@
-import { Notice, Platform, Plugin } from 'obsidian';
+import {
+	arrayBufferToBase64,
+	Notice,
+	Platform,
+	Plugin,
+} from 'obsidian';
 import { ObsidianHttpTransport } from './adapters/obsidian-http';
+import { ObsidianVaultReplica } from './adapters/obsidian-vault';
+import { AbcmSyncClient } from './api/sync-client';
 import { pairDevice } from './pairing/pairing-service';
 import {
 	DEVICE_CREDENTIAL_SECRET_ID,
@@ -9,10 +16,25 @@ import {
 	type SupportedPlatform,
 } from './settings/model';
 import { AbcmSyncSettingTab } from './settings/settings-tab';
+import {
+	hydrateSyncState,
+	runSyncCycle,
+	type PersistedSyncState,
+	type SyncChecksum,
+} from './sync';
 
-function deviceId(): string {
+const LOCAL_STATE_KEY = 'abcm-sync-state-v1';
+
+function randomId(prefix: 'device' | 'op'): string {
 	const bytes = crypto.getRandomValues(new Uint8Array(16));
-	return `device_${[...bytes]
+	return `${prefix}_${[...bytes]
+		.map((byte) => byte.toString(16).padStart(2, '0'))
+		.join('')}`;
+}
+
+async function checksum(content: ArrayBuffer): Promise<SyncChecksum> {
+	const digest = await crypto.subtle.digest('SHA-256', content);
+	return `sha256:${[...new Uint8Array(digest)]
 		.map((byte) => byte.toString(16).padStart(2, '0'))
 		.join('')}`;
 }
@@ -22,6 +44,10 @@ function currentPlatform(): SupportedPlatform {
 	if (Platform.isWin) return 'windows';
 	if (Platform.isLinux) return 'linux';
 	throw new Error('This ABCM Sync build supports Windows, Linux, and iPadOS.');
+}
+
+function initialState(): PersistedSyncState {
+	return { schemaVersion: 1, cursor: null, objects: [], outbox: [] };
 }
 
 export default class AbcmSyncPlugin extends Plugin {
@@ -48,6 +74,11 @@ export default class AbcmSyncPlugin extends Plugin {
 				);
 			},
 		});
+		this.registerInterval(
+			window.setInterval(() => {
+				void this.syncNow(false);
+			}, this.settings.intervalSeconds * 1_000),
+		);
 	}
 
 	async updateSettings(update: Partial<AbcmSyncSettings>): Promise<void> {
@@ -65,24 +96,52 @@ export default class AbcmSyncPlugin extends Plugin {
 			this.settings,
 			{
 				pairingCode,
-				deviceId: this.settings.deviceId ?? deviceId(),
+				deviceId: this.settings.deviceId ?? randomId('device'),
 				platform: currentPlatform(),
 			},
 		);
 		this.settings = next;
 	}
 
-	async syncNow(): Promise<void> {
+	async syncNow(notify = true): Promise<void> {
 		try {
-			validateSettings(this.settings);
-			if (!this.isPaired()) {
+			const settings = validateSettings(this.settings);
+			const credential = this.app.secretStorage.getSecret(
+				DEVICE_CREDENTIAL_SECRET_ID,
+			);
+			if (!this.isPaired() || credential === null) {
+				if (!notify) return;
 				throw new Error('Pair this device before synchronizing.');
 			}
-			new Notice('Synchronization transport will be enabled by the next work unit.');
-		} catch (error) {
-			new Notice(
-				error instanceof Error ? error.message : 'ABCM synchronization failed.',
+			const stored: unknown = this.app.loadLocalStorage(LOCAL_STATE_KEY);
+			const state = stored === null ? initialState() : hydrateSyncState(stored);
+			const client = new AbcmSyncClient(
+				new ObsidianHttpTransport(),
+				settings.endpoint,
+				settings.workspaceId,
+				settings.projectId,
+				credential,
 			);
+			const cursor = await runSyncCycle(
+				client,
+				new ObsidianVaultReplica(this.app.vault, settings.vaultFolder),
+				{
+					cursor: state.cursor,
+					include: settings.include,
+					exclude: settings.exclude,
+					operationId: () => randomId('op'),
+					checksum,
+					base64: arrayBufferToBase64,
+				},
+			);
+			this.app.saveLocalStorage(LOCAL_STATE_KEY, { ...state, cursor });
+			if (notify) new Notice(`${this.manifest.name} synchronization completed.`);
+		} catch (error) {
+			if (notify) {
+				new Notice(
+					error instanceof Error ? error.message : 'ABCM synchronization failed.',
+				);
+			}
 		}
 	}
 
