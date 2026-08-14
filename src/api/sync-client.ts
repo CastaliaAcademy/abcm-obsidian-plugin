@@ -27,6 +27,7 @@ export interface PreviewResult {
 	previewId: string;
 	serverRevision: string;
 	cursor: string;
+	expiresAt?: string;
 	items: PreviewItem[];
 }
 
@@ -42,8 +43,56 @@ export interface ApplyOperation {
 	size: number;
 }
 
+export interface ApplyReceipt {
+	operationId: string;
+	cursor: string;
+	objectId: string;
+	checksum: SyncChecksum | null;
+	status: 'applied' | 'duplicate' | 'conflict';
+	conflictId?: string;
+}
+
 export interface ApplyResult {
-	receipts: Array<{ status: string; cursor: string }>;
+	receipts: ApplyReceipt[];
+}
+
+interface ChangeBase {
+	cursor: string;
+	objectId: string;
+	operationId: string;
+	originDeviceId: string | null;
+	path: string;
+	occurredAt: string;
+}
+
+interface ContentChange {
+	checksum: SyncChecksum;
+	size: number;
+	contentType: string;
+	tombstone: false;
+}
+
+export type SyncChange =
+	| (ChangeBase & ContentChange & { kind: 'create' })
+	| (ChangeBase & ContentChange & {
+			kind: 'update';
+			baseChecksum: SyncChecksum;
+	  })
+	| (ChangeBase & {
+			kind: 'delete';
+			baseChecksum: SyncChecksum;
+			tombstone: true;
+	  })
+	| (ChangeBase & ContentChange & {
+			kind: 'move';
+			previousPath: string;
+			baseChecksum: SyncChecksum;
+	  });
+
+export interface ChangesResult {
+	changes: SyncChange[];
+	nextCursor: string;
+	hasMore: boolean;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -54,7 +103,13 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 export interface SyncApi {
-	preview(cursor: string | null, inventory: ReplicaEntry[], include: string[], exclude: string[]): Promise<PreviewResult>;
+	preview(
+		cursor: string | null,
+		inventory: ReplicaEntry[],
+		include: string[],
+		exclude: string[],
+	): Promise<PreviewResult>;
+	changes(cursor: string, limit: number): Promise<ChangesResult>;
 	readContent(path: string): Promise<ArrayBuffer>;
 	apply(preview: PreviewResult, operations: ApplyOperation[]): Promise<ApplyResult>;
 }
@@ -89,17 +144,51 @@ export class AbcmSyncClient implements SyncApi {
 			url: `${this.base()}/preview`,
 			method: 'POST',
 			headers: this.headers(),
-			body: JSON.stringify({ cursor, inventory, include, exclude }),
+			body: JSON.stringify({
+				cursor,
+				inventory: inventory.map(({ path, checksum, size, contentType }) => ({
+					path,
+					checksum,
+					size,
+					...(contentType === undefined ? {} : { contentType }),
+				})),
+				include,
+				exclude,
+			}),
 		});
-		if (response.status !== 200) throw new Error(`ABCM preview failed with HTTP ${response.status}.`);
+		if (response.status !== 200) {
+			throw new Error(`ABCM preview failed with HTTP ${response.status}.`);
+		}
 		const value = record(response.json);
 		if (
 			typeof value.previewId !== 'string' ||
 			typeof value.serverRevision !== 'string' ||
 			typeof value.cursor !== 'string' ||
 			!Array.isArray(value.items)
-		) throw new Error('ABCM preview response is invalid.');
+		) {
+			throw new Error('ABCM preview response is invalid.');
+		}
 		return value as unknown as PreviewResult;
+	}
+
+	async changes(cursor: string, limit: number): Promise<ChangesResult> {
+		const response = await this.transport.request({
+			url: `${this.base()}/changes?cursor=${encodeURIComponent(cursor)}&limit=${limit}`,
+			method: 'GET',
+			headers: { authorization: `Bearer ${this.credential}` },
+		});
+		if (response.status !== 200) {
+			throw new Error(`ABCM changes read failed with HTTP ${response.status}.`);
+		}
+		const value = record(response.json);
+		if (
+			!Array.isArray(value.changes) ||
+			typeof value.nextCursor !== 'string' ||
+			typeof value.hasMore !== 'boolean'
+		) {
+			throw new Error('ABCM changes response is invalid.');
+		}
+		return value as unknown as ChangesResult;
 	}
 
 	async readContent(path: string): Promise<ArrayBuffer> {
@@ -108,11 +197,16 @@ export class AbcmSyncClient implements SyncApi {
 			method: 'GET',
 			headers: { authorization: `Bearer ${this.credential}` },
 		});
-		if (response.status !== 200) throw new Error(`ABCM content read failed with HTTP ${response.status}.`);
+		if (response.status !== 200) {
+			throw new Error(`ABCM content read failed with HTTP ${response.status}.`);
+		}
 		return response.arrayBuffer;
 	}
 
-	async apply(preview: PreviewResult, operations: ApplyOperation[]): Promise<ApplyResult> {
+	async apply(
+		preview: PreviewResult,
+		operations: ApplyOperation[],
+	): Promise<ApplyResult> {
 		const response = await this.transport.request({
 			url: `${this.base()}/apply`,
 			method: 'POST',
@@ -124,9 +218,13 @@ export class AbcmSyncClient implements SyncApi {
 				operations,
 			}),
 		});
-		if (response.status !== 200) throw new Error(`ABCM apply failed with HTTP ${response.status}.`);
+		if (response.status !== 200) {
+			throw new Error(`ABCM apply failed with HTTP ${response.status}.`);
+		}
 		const value = record(response.json);
-		if (!Array.isArray(value.receipts)) throw new Error('ABCM apply response is invalid.');
+		if (!Array.isArray(value.receipts)) {
+			throw new Error('ABCM apply response is invalid.');
+		}
 		return value as unknown as ApplyResult;
 	}
 }

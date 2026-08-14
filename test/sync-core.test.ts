@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	createInitialSyncState,
 	hydrateSyncState,
 	planReplicaObject,
 	serializeSyncState,
@@ -89,22 +90,43 @@ describe('platform-neutral synchronization core', () => {
 		).toBe(false);
 	});
 
-	it('round-trips cursor, object mapping, and outbox across restart', () => {
+	it('round-trips pinned outbox metadata without document bodies', () => {
 		const state = {
-			schemaVersion: 1 as const,
+			...createInitialSyncState(),
 			cursor: 'cursor_00000001',
 			objects: [base],
-			outbox: [
-				{
-					operationId: 'op_00000001',
-					objectId: base.objectId,
-					path: base.path,
-					baseChecksum: base.checksum,
-				},
-			],
+			outbox: [{
+				operationId: 'op_00000001',
+				objectId: base.objectId,
+				path: base.path,
+				kind: 'update' as const,
+				checksum: checksum('b'),
+				baseChecksum: base.checksum,
+				size: 1,
+				contentType: 'text/markdown',
+				previewId: 'preview_00000001',
+				serverRevision: 'revision-1',
+				previewCursor: 'cursor_00000001',
+			}],
+			recentOperationIds: ['op_00000000'],
 		};
-		expect(hydrateSyncState(JSON.parse(serializeSyncState(state)))).toEqual(
-			state,
-		);
+		const serialized = serializeSyncState(state);
+		expect(serialized).not.toContain('contentBase64');
+		expect(hydrateSyncState(JSON.parse(serialized))).toEqual(state);
+	});
+
+	it('migrates an empty version-one state and rejects an unsafe legacy outbox', () => {
+		expect(hydrateSyncState({
+			schemaVersion: 1,
+			cursor: null,
+			objects: [],
+			outbox: [],
+		})).toEqual(createInitialSyncState());
+		expect(() => hydrateSyncState({
+			schemaVersion: 1,
+			cursor: null,
+			objects: [],
+			outbox: [{ operationId: 'legacy' }],
+		})).toThrow('Legacy pending outbox');
 	});
 });

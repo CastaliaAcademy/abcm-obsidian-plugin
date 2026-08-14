@@ -16,10 +16,11 @@ import {
 	type SupportedPlatform,
 } from './settings/model';
 import { AbcmSyncSettingTab } from './settings/settings-tab';
+import { confirmInitialSync } from './ui/initial-sync-modal';
 import {
+	createInitialSyncState,
 	hydrateSyncState,
 	runSyncCycle,
-	type PersistedSyncState,
 	type SyncChecksum,
 } from './sync';
 
@@ -46,12 +47,9 @@ function currentPlatform(): SupportedPlatform {
 	throw new Error('This ABCM Sync build supports Windows, Linux, and iPadOS.');
 }
 
-function initialState(): PersistedSyncState {
-	return { schemaVersion: 1, cursor: null, objects: [], outbox: [] };
-}
-
 export default class AbcmSyncPlugin extends Plugin {
 	settings!: AbcmSyncSettings;
+	private syncInProgress = false;
 
 	async onload(): Promise<void> {
 		this.settings = normalizeSettings(await this.loadData());
@@ -104,17 +102,24 @@ export default class AbcmSyncPlugin extends Plugin {
 	}
 
 	async syncNow(notify = true): Promise<void> {
+		if (this.syncInProgress) {
+			if (notify) new Notice(`${this.manifest.name} synchronization is already running.`);
+			return;
+		}
+		this.syncInProgress = true;
 		try {
 			const settings = validateSettings(this.settings);
 			const credential = this.app.secretStorage.getSecret(
 				DEVICE_CREDENTIAL_SECRET_ID,
 			);
-			if (!this.isPaired() || credential === null) {
+			if (!this.isPaired() || credential === null || settings.deviceId === null) {
 				if (!notify) return;
 				throw new Error('Pair this device before synchronizing.');
 			}
 			const stored: unknown = this.app.loadLocalStorage(LOCAL_STATE_KEY);
-			const state = stored === null ? initialState() : hydrateSyncState(stored);
+			const state = stored === null
+				? createInitialSyncState()
+				: hydrateSyncState(stored);
 			const client = new AbcmSyncClient(
 				new ObsidianHttpTransport(),
 				settings.endpoint,
@@ -122,26 +127,36 @@ export default class AbcmSyncPlugin extends Plugin {
 				settings.projectId,
 				credential,
 			);
-			const cursor = await runSyncCycle(
+			await runSyncCycle(
 				client,
 				new ObsidianVaultReplica(this.app.vault, settings.vaultFolder),
 				{
-					cursor: state.cursor,
+					state,
+					deviceId: settings.deviceId,
 					include: settings.include,
 					exclude: settings.exclude,
 					operationId: () => randomId('op'),
 					checksum,
 					base64: arrayBufferToBase64,
+					confirmInitialPreview: (preview) => notify
+						? confirmInitialSync(this.app, preview)
+						: Promise.resolve(false),
+					persistState: (next) => {
+						this.app.saveLocalStorage(LOCAL_STATE_KEY, next);
+					},
 				},
 			);
-			this.app.saveLocalStorage(LOCAL_STATE_KEY, { ...state, cursor });
 			if (notify) new Notice(`${this.manifest.name} synchronization completed.`);
 		} catch (error) {
 			if (notify) {
 				new Notice(
-					error instanceof Error ? error.message : 'ABCM synchronization failed.',
+					error instanceof Error
+						? error.message
+						: 'ABCM synchronization failed.',
 				);
 			}
+		} finally {
+			this.syncInProgress = false;
 		}
 	}
 
@@ -149,6 +164,7 @@ export default class AbcmSyncPlugin extends Plugin {
 		return (
 			this.settings.credentialSecretId === DEVICE_CREDENTIAL_SECRET_ID &&
 			this.app.secretStorage.getSecret(DEVICE_CREDENTIAL_SECRET_ID) !== null &&
+			this.settings.deviceId !== null &&
 			this.settings.workspaceId !== '' &&
 			this.settings.projectId !== ''
 		);
