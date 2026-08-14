@@ -5,10 +5,7 @@ with one explicitly paired ABCM workspace and project.
 
 ## Current status
 
-WU-04 provides the public plugin repository, mobile-compatible plugin shell,
-portable-path rules, deterministic three-way synchronization decisions,
-echo suppression, and validated restart state. Pairing and settings UI arrive in
-WU-05; end-to-end synchronization arrives in WU-06.
+WU-04 provides the public plugin repository and platform-neutral sync core. WU-05 adds validated endpoint and mapping settings, one-time scoped pairing, Obsidian SecretStorage credentials, include/exclude filters, foreground interval, and the manual Sync now command. End-to-end synchronization arrives in WU-06.
 
 The plugin is not ready for ordinary installation yet.
 
@@ -28,8 +25,7 @@ include/exclude rules. The plugin does not include telemetry, advertising,
 remote-code execution, or access outside the active vault.
 
 Device credentials must be scoped to one ABCM workspace/project and must not be
-stored in Markdown, logs, or ordinary plugin data. Secure credential storage is
-part of WU-05.
+stored in Markdown, logs, or ordinary plugin data. Credentials are stored through Obsidian SecretStorage and ordinary plugin data contains only the stable secret identifier.
 
 ## Development
 

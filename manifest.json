@@ -2,7 +2,7 @@
 	"id": "abcm-sync",
 	"name": "ABCM Sync",
 	"version": "0.1.0",
-	"minAppVersion": "1.0.0",
+	"minAppVersion": "1.11.4",
 	"description": "Synchronizes an Obsidian vault with a scoped ABCM project.",
 	"author": "Castalia",
 	"authorUrl": "https://github.com/CastaliaAcademy",
