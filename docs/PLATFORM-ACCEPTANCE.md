@@ -178,6 +178,17 @@ scenarioResults:
       - zero server apply receipts, tombstones, and open conflicts after initial pull
       - operator reported successful synchronization in the active Windows Obsidian vault
     notes: Confirmed initial pull and exact bytes pass. Explicit decline/no-mutation and restart persistence remain pending.
+  P03:
+    status: pass
+    evidence:
+      - REST create converged to local sha256:dc0dbbb405834e65908a68bafffa0735ae566d64b744d133e59e58e26ce28855
+      - checksum-guarded REST update converged to local sha256:069191f1110746a3ec473af878db7ac174b876ff9d31c780db00a4670cab488d
+      - REST move removed p03-server.md and created p03-renamed.md with exact bytes
+      - objectId obj_48d9ef3f2674447189fd34a484367096 remained stable through create, update, move, and delete
+      - REST delete produced tombstone event sequence 4 and removed both old and new local paths
+      - final cursor cur_1_4_38905417cd61c47e2d971916 preview contained only the two baseline noop items
+      - zero open conflicts after convergence
+    notes: Server-to-local text lifecycle passed through the active foreground plugin without manual file copying.
 knownLimitations: []
 failures:
   - status: corrected
@@ -186,3 +197,6 @@ failures:
     correctiveCommit: 16e9f43c980cf669ced4488e7ed26704b1d0b22f
 correctiveCommits:
   - 16e9f43c980cf669ced4488e7ed26704b1d0b22f
+finalDecision: pending
+reviewedAtUtc: 2026-08-17T23:25:18Z
+```
