@@ -57,6 +57,31 @@ export interface PersistedObjectState {
 	checksum: SyncChecksum;
 }
 
+export type ConflictSide =
+	| {
+			state: 'present';
+			checksum: SyncChecksum;
+			size: number;
+			contentType: string;
+	  }
+	| {
+			state: 'deleted';
+			baseChecksum: SyncChecksum;
+	  };
+
+export interface PersistedConflictState {
+	conflictId: string;
+	objectId: string;
+	kind: SyncConflictKind | 'portable-path';
+	path: string;
+	localPath: string | null;
+	serverPath: string | null;
+	local: ConflictSide;
+	server: ConflictSide;
+	baseChecksum: SyncChecksum | null;
+	artifactPath: string;
+}
+
 export interface PersistedOutboxEntry {
 	operationId: string;
 	objectId: string;
@@ -73,9 +98,10 @@ export interface PersistedOutboxEntry {
 }
 
 export interface PersistedSyncState {
-	schemaVersion: 3;
+	schemaVersion: 4;
 	cursor: string | null;
 	objects: PersistedObjectState[];
 	outbox: PersistedOutboxEntry[];
+	conflicts: PersistedConflictState[];
 	recentOperationIds: string[];
 }

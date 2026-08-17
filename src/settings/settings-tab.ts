@@ -142,6 +142,26 @@ export class AbcmSyncSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName('Pause synchronization')
+			.setDesc('Stop foreground events, polling, and retries without deleting the cursor or outbox.')
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.paused).onChange(async () => {
+					await this.plugin.togglePause();
+					this.display();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName('Re-pair device')
+			.setDesc('Clear the current device credential while preserving local synchronization state for safe recovery.')
+			.addButton((button) =>
+				button.setButtonText('Clear authorization').setWarning().onClick(async () => {
+					await this.plugin.rePair();
+					this.display();
+				}),
+			);
+
+		new Setting(containerEl)
 			.setName('Manual synchronization')
 			.setDesc('Run one foreground synchronization cycle.')
 			.addButton((button) =>

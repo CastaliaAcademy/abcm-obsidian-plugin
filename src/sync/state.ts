@@ -1,5 +1,7 @@
 import { assertPortablePath, portablePathKey } from './portable-path';
 import type {
+	ConflictSide,
+	PersistedConflictState,
 	PersistedObjectState,
 	PersistedOutboxEntry,
 	PersistedSyncState,
@@ -26,6 +28,52 @@ function parseObject(value: unknown): PersistedObjectState {
 		objectId: value.objectId,
 		path: value.path,
 		checksum: value.checksum,
+	};
+}
+
+function parseConflictSide(value: unknown): ConflictSide {
+	if (!isRecord(value) || (value.state !== 'present' && value.state !== 'deleted')) {
+		throw new Error('Persisted conflict side is invalid.');
+	}
+	if (value.state === 'deleted') {
+		assertChecksum(value.baseChecksum);
+		return { state: 'deleted', baseChecksum: value.baseChecksum };
+	}
+	assertChecksum(value.checksum);
+	if (typeof value.size !== 'number' || !Number.isSafeInteger(value.size) || value.size < 0 || typeof value.contentType !== 'string') {
+		throw new Error('Persisted conflict content metadata is invalid.');
+	}
+	return { state: 'present', checksum: value.checksum, size: value.size, contentType: value.contentType };
+}
+
+function parseConflict(value: unknown): PersistedConflictState {
+	if (!isRecord(value)) throw new Error('Persisted conflict is invalid.');
+	const kinds = new Set(['concurrent-update', 'delete-update', 'move-move', 'portable-path']);
+	if (
+		typeof value.conflictId !== 'string' || typeof value.objectId !== 'string' ||
+		typeof value.kind !== 'string' || !kinds.has(value.kind) || typeof value.path !== 'string' ||
+		!(typeof value.localPath === 'string' || value.localPath === null) ||
+		!(typeof value.serverPath === 'string' || value.serverPath === null) ||
+		typeof value.artifactPath !== 'string'
+	) throw new Error('Persisted conflict identity is invalid.');
+	assertPortablePath(value.path);
+	if (typeof value.localPath === 'string') assertPortablePath(value.localPath);
+	if (typeof value.serverPath === 'string') assertPortablePath(value.serverPath);
+	if (!value.artifactPath.startsWith('_ABCM Conflicts/' + value.conflictId + '/')) {
+		throw new Error('Persisted conflict artifact path is invalid.');
+	}
+	if (value.baseChecksum !== null) assertChecksum(value.baseChecksum);
+	return {
+		conflictId: value.conflictId,
+		objectId: value.objectId,
+		kind: value.kind as PersistedConflictState['kind'],
+		path: value.path,
+		localPath: value.localPath,
+		serverPath: value.serverPath,
+		local: parseConflictSide(value.local),
+		server: parseConflictSide(value.server),
+		baseChecksum: value.baseChecksum,
+		artifactPath: value.artifactPath,
 	};
 }
 
@@ -115,16 +163,17 @@ function assertUniqueObjects(objects: PersistedObjectState[]): void {
 
 export function createInitialSyncState(): PersistedSyncState {
 	return {
-		schemaVersion: 3,
+		schemaVersion: 4,
 		cursor: null,
 		objects: [],
 		outbox: [],
+		conflicts: [],
 		recentOperationIds: [],
 	};
 }
 
 export function hydrateSyncState(value: unknown): PersistedSyncState {
-	if (!isRecord(value) || ![1, 2, 3].includes(value.schemaVersion as number)) {
+	if (!isRecord(value) || ![1, 2, 3, 4].includes(value.schemaVersion as number)) {
 		throw new Error('Unsupported persisted sync state.');
 	}
 	if (!(typeof value.cursor === 'string' || value.cursor === null)) {
@@ -155,11 +204,22 @@ export function hydrateSyncState(value: unknown): PersistedSyncState {
 	if (new Set(recentOperationIds).size !== recentOperationIds.length) {
 		throw new Error('Persisted recent operation identities contain duplicates.');
 	}
+	const conflicts = value.schemaVersion === 4
+		? (() => {
+			if (!Array.isArray(value.conflicts)) throw new Error('Persisted conflicts are invalid.');
+			const parsed = value.conflicts.map(parseConflict);
+			if (new Set(parsed.map((conflict) => conflict.conflictId)).size !== parsed.length || new Set(parsed.map((conflict) => conflict.objectId)).size !== parsed.length) {
+				throw new Error('Persisted conflicts contain duplicate identities.');
+			}
+			return parsed;
+		})()
+		: [];
 	return {
-		schemaVersion: 3,
+		schemaVersion: 4,
 		cursor: value.cursor,
 		objects,
 		outbox: value.outbox.map(parseOutbox),
+		conflicts,
 		recentOperationIds,
 	};
 }

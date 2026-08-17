@@ -24,19 +24,16 @@ jobs:
             - name: Build plugin
               run: |
                   npm ci
-                  npm run build
-
-            - name: Check for optional styles
-              id: styles
-              run: |
-                  [ -f styles.css ] && echo "exists=true" >> "$GITHUB_OUTPUT" || echo "exists=false" >> "$GITHUB_OUTPUT"
+                  npm run release:prepare
 
             - name: Attest build provenance
               uses: actions/attest@v4
               with:
                   subject-path: |
-                      main.js
-                      ${{ steps.styles.outputs.exists == 'true' && 'styles.css' || '' }}
+                      release/main.js
+                      release/manifest.json
+                      release/styles.css
+                      release/SHA256SUMS
 
             - name: Create release
               env:
@@ -47,4 +44,4 @@ jobs:
                   gh release create "$tag" \
                     --title="$tag" \
                     --draft \
-                    main.js manifest.json ${{ steps.styles.outputs.exists == 'true' && 'styles.css' || '' }}
+                    release/main.js release/manifest.json release/styles.css release/SHA256SUMS

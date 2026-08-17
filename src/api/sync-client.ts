@@ -1,5 +1,5 @@
 import type { HttpTransport } from './http';
-import type { BaseEntry, ReplicaEntry, SyncChecksum } from '../sync';
+import type { BaseEntry, ConflictSide, ReplicaEntry, SyncChecksum } from '../sync';
 
 export type PreviewAction =
 	| 'create-local'
@@ -55,6 +55,9 @@ export type ApplyOperation =
 		previousPath: string;
 		checksum: SyncChecksum;
 		baseChecksum: SyncChecksum;
+		contentBase64: string;
+		contentType: string;
+		size: number;
 	});
 
 export interface ApplyReceipt {
@@ -68,6 +71,21 @@ export interface ApplyReceipt {
 
 export interface ApplyResult {
 	receipts: ApplyReceipt[];
+}
+
+export type ConflictResolution = 'keep-local' | 'keep-server' | 'keep-both';
+
+export interface SyncConflict {
+	conflictId: string;
+	objectId: string;
+	kind: 'concurrent-update' | 'delete-update' | 'move-move' | 'portable-path';
+	path: string;
+	localPath: string | null;
+	serverPath: string | null;
+	local: ConflictSide;
+	server: ConflictSide;
+	baseChecksum: SyncChecksum | null;
+	status: 'open' | 'resolved';
 }
 
 interface ChangeBase {
@@ -109,6 +127,32 @@ export interface ChangesResult {
 	hasMore: boolean;
 }
 
+export class AbcmSyncHttpError extends Error {
+	constructor(
+		message: string,
+		readonly status: number,
+		readonly code: string | null,
+	) {
+		super(message);
+		this.name = 'AbcmSyncHttpError';
+	}
+}
+
+function responseCode(value: unknown): string | null {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+	const code = (value as Record<string, unknown>).code;
+	return typeof code === 'string' ? code : null;
+}
+
+function assertStatus(status: number, expected: number, body: unknown, operation: string): void {
+	if (status === expected) return;
+	throw new AbcmSyncHttpError(
+		`ABCM ${operation} failed with HTTP ${status}.`,
+		status,
+		responseCode(body),
+	);
+}
+
 function record(value: unknown): Record<string, unknown> {
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		throw new Error('ABCM sync response is invalid.');
@@ -126,6 +170,8 @@ export interface SyncApi {
 	): Promise<PreviewResult>;
 	changes(cursor: string, limit: number): Promise<ChangesResult>;
 	readContent(path: string): Promise<ArrayBuffer>;
+	getConflict?(conflictId: string): Promise<SyncConflict>;
+	resolveConflict?(conflictId: string, input: { operationId: string; resolution: ConflictResolution; localChecksum: SyncChecksum | null; serverChecksum: SyncChecksum | null; keepBothPath?: string }): Promise<ApplyReceipt>;
 	apply(preview: PreviewResult, operations: ApplyOperation[]): Promise<ApplyResult>;
 }
 
@@ -173,9 +219,7 @@ export class AbcmSyncClient implements SyncApi {
 				...(base === undefined ? {} : { base }),
 			}),
 		});
-		if (response.status !== 200) {
-			throw new Error(`ABCM preview failed with HTTP ${response.status}.`);
-		}
+		assertStatus(response.status, 200, response.json, 'preview');
 		const value = record(response.json);
 		if (
 			typeof value.previewId !== 'string' ||
@@ -194,9 +238,7 @@ export class AbcmSyncClient implements SyncApi {
 			method: 'GET',
 			headers: { authorization: `Bearer ${this.credential}` },
 		});
-		if (response.status !== 200) {
-			throw new Error(`ABCM changes read failed with HTTP ${response.status}.`);
-		}
+		assertStatus(response.status, 200, response.json, 'changes read');
 		const value = record(response.json);
 		if (
 			!Array.isArray(value.changes) ||
@@ -214,10 +256,32 @@ export class AbcmSyncClient implements SyncApi {
 			method: 'GET',
 			headers: { authorization: `Bearer ${this.credential}` },
 		});
-		if (response.status !== 200) {
-			throw new Error(`ABCM content read failed with HTTP ${response.status}.`);
-		}
+		assertStatus(response.status, 200, response.json, 'content read');
 		return response.arrayBuffer;
+	}
+
+	async getConflict(conflictId: string): Promise<SyncConflict> {
+		const response = await this.transport.request({
+			url: this.base() + '/conflicts/' + encodeURIComponent(conflictId),
+			method: 'GET',
+			headers: { authorization: 'Bearer ' + this.credential },
+		});
+		assertStatus(response.status, 200, response.json, 'conflict read');
+		return record(response.json) as unknown as SyncConflict;
+	}
+
+	async resolveConflict(
+		conflictId: string,
+		input: { operationId: string; resolution: ConflictResolution; localChecksum: SyncChecksum | null; serverChecksum: SyncChecksum | null; keepBothPath?: string },
+	): Promise<ApplyReceipt> {
+		const response = await this.transport.request({
+			url: this.base() + '/conflicts/' + encodeURIComponent(conflictId) + '/resolve',
+			method: 'POST',
+			headers: this.headers(),
+			body: JSON.stringify(input),
+		});
+		assertStatus(response.status, 200, response.json, 'conflict resolution');
+		return record(response.json) as unknown as ApplyReceipt;
 	}
 
 	async apply(
@@ -235,9 +299,7 @@ export class AbcmSyncClient implements SyncApi {
 				operations,
 			}),
 		});
-		if (response.status !== 200) {
-			throw new Error(`ABCM apply failed with HTTP ${response.status}.`);
-		}
+		assertStatus(response.status, 200, response.json, 'apply');
 		const value = record(response.json);
 		if (!Array.isArray(value.receipts)) {
 			throw new Error('ABCM apply response is invalid.');

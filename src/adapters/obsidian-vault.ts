@@ -70,6 +70,22 @@ export class ObsidianVaultReplica implements LocalReplica {
 		else throw new Error(`Vault path '${path}' is not a file.`);
 	}
 
+	async writeConflictArtifact(
+		conflictId: string,
+		sourcePath: string,
+		content: ArrayBuffer,
+	): Promise<string> {
+		const filename = sourcePath.split('/').at(-1) ?? 'server-version.bin';
+		const artifactPath = `${CONFLICT_ROOT}/${conflictId}/server-${filename}`;
+		const absolute = this.absolute(artifactPath);
+		await this.ensureParent(absolute);
+		const existing = this.vault.getAbstractFileByPath(absolute);
+		if (existing instanceof TFile) await this.vault.modifyBinary(existing, content);
+		else if (existing === null) await this.vault.createBinary(absolute, content);
+		else throw new Error(`Conflict artifact '${artifactPath}' is not a file.`);
+		return artifactPath;
+	}
+
 	async delete(path: string): Promise<void> {
 		const file = this.vault.getFileByPath(this.absolute(path));
 		if (file === null) throw new Error(`Vault file '${path}' does not exist.`);

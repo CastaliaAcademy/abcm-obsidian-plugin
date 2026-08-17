@@ -15,3 +15,13 @@ export interface HttpResponse {
 export interface HttpTransport {
 	request(request: HttpRequest): Promise<HttpResponse>;
 }
+
+export class AbcmTransportError extends Error {
+	readonly cause: unknown;
+
+	constructor(message: string, cause?: unknown) {
+		super(message);
+		this.name = 'AbcmTransportError';
+		this.cause = cause;
+	}
+}

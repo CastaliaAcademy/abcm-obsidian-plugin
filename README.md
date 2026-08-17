@@ -1,43 +1,58 @@
 # ABCM Sync for Obsidian
 
-ABCM Sync is a cross-platform Obsidian plugin for bidirectional synchronization
-with one explicitly paired ABCM workspace and project.
+ABCM Sync is a conflict-safe, bidirectional connector between one folder in an Obsidian vault and one explicitly paired ABCM workspace/project.
 
-## Current status
+## Private beta status
 
-WU-04 provides the public plugin repository and platform-neutral sync core. WU-05 adds validated endpoint and mapping settings, one-time scoped pairing, Obsidian SecretStorage credentials, include/exclude filters, foreground interval, and the manual Sync now command. End-to-end synchronization arrives in WU-06.
+The protocol, server endpoints, exact-byte create/update/delete/move operations, durable outbox, conflict recovery, offline retry, and foreground synchronization are implemented. Automated server and plugin gates pass. Public beta still requires recorded acceptance on physical Windows, Linux, and iPadOS devices.
 
-The plugin is not ready for ordinary installation yet.
+Do not publish a GitHub release or submit the plugin to `obsidian-releases` until the platform matrix is complete and publication is separately approved.
 
-## Platform boundary
+## Supported behavior
 
-- `manifest.json` declares `isDesktopOnly: false`.
-- Runtime synchronization modules use browser-compatible TypeScript only.
-- Node.js is used by the development and test toolchain, never by plugin runtime
-  code.
-- Windows, Linux, and iPadOS share the same synchronization core.
+- Windows, Linux, and iPadOS use the same mobile-compatible sync core.
+- The plugin uses Obsidian `requestUrl`, Vault, FileManager, SecretStorage, and localStorage APIs.
+- Initial synchronization shows a non-mutating preview and requires explicit confirmation.
+- Text and binary files preserve exact bytes within ABCM limits.
+- Local create, modify, delete, and rename events are debounced after `Workspace.onLayoutReady`.
+- Synchronization runs manually, periodically, and when Obsidian returns to the foreground.
+- Conflicts preserve all present versions and require **Keep local**, **Keep server**, or **Keep both**.
+- A revoked credential pauses synchronization and requires re-pairing.
+
+ABCM Sync does not promise background networking while Obsidian is suspended or closed on iPadOS. Durable cursor/outbox state resumes when the app becomes active again.
+
+## Installation for private testing
+
+1. Run `npm ci` and `npm run release:prepare`.
+2. Verify `release/SHA256SUMS`.
+3. Copy `release/main.js`, `release/manifest.json`, and `release/styles.css` into `<Vault>/.obsidian/plugins/abcm-sync/`.
+4. Reload Obsidian, enable **ABCM Sync**, and open its settings.
+5. Enter the HTTPS ABCM endpoint and a one-time project-scoped pairing code.
+6. Choose the vault folder and run **Preview initial sync**.
+
+## Operating limits
+
+- One ABCM project mapping per plugin installation.
+- Maximum inventory: 10,000 files; changes page: 1,000; apply batch: 100.
+- Chunked upload, CRDT/real-time collaboration, automatic merge, guaranteed background iPadOS sync, `.obsidian` synchronization, and simultaneous directory-mirror ownership are outside version 0.1.
+- `_ABCM Conflicts` is service-owned, visible, and excluded from synchronization.
 
 ## Privacy and security
 
-ABCM Sync will contact only the ABCM endpoint explicitly configured by the user.
-It will send only files selected by the configured project mapping and
-include/exclude rules. The plugin does not include telemetry, advertising,
-remote-code execution, or access outside the active vault.
+The plugin contacts only the configured ABCM endpoint. Selected filenames, metadata, and file bytes are sent because they are required for synchronization. It has no telemetry, advertising, analytics, or remote-code execution.
 
-Device credentials must be scoped to one ABCM workspace/project and must not be
-stored in Markdown, logs, or ordinary plugin data. Credentials are stored through Obsidian SecretStorage and ordinary plugin data contains only the stable secret identifier.
+The device credential is scoped and revocable and is stored only in Obsidian SecretStorage. Markdown, ordinary plugin data, logs, conflict artifacts, and ABCM documents must never contain it. See [Privacy](docs/PRIVACY.md), [Recovery](docs/RECOVERY.md), and [Platform acceptance](docs/PLATFORM-ACCEPTANCE.md).
 
 ## Development
 
-Use the npm and esbuild workflow inherited from the official
-[`obsidianmd/obsidian-sample-plugin`](https://github.com/obsidianmd/obsidian-sample-plugin):
-
 ```bash
-npm install
+npm ci
 npm run check
+npm run release:prepare
+npm run release:check
 ```
 
-The production build emits `main.js`. Do not commit generated build artifacts.
+Release assets are generated under ignored `release/`; `main.js` and generated assets are not committed.
 
 ## License
 

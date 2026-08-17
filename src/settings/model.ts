@@ -11,6 +11,7 @@ export interface AbcmSyncSettings {
 	include: string[];
 	exclude: string[];
 	intervalSeconds: number;
+	paused: boolean;
 	deviceName: string;
 	deviceId: string | null;
 	credentialSecretId: string | null;
@@ -27,6 +28,7 @@ export const DEFAULT_SETTINGS: AbcmSyncSettings = {
 	include: [],
 	exclude: [],
 	intervalSeconds: 60,
+	paused: false,
 	deviceName: 'Obsidian',
 	deviceId: null,
 	credentialSecretId: null,
@@ -63,6 +65,7 @@ export function normalizeSettings(value: unknown): AbcmSyncSettings {
 			typeof value.intervalSeconds === 'number'
 				? value.intervalSeconds
 				: DEFAULT_SETTINGS.intervalSeconds,
+		paused: typeof value.paused === 'boolean' ? value.paused : false,
 		deviceName: stringValue(value.deviceName, DEFAULT_SETTINGS.deviceName),
 		deviceId: nullableString(value.deviceId, null),
 		credentialSecretId: nullableString(value.credentialSecretId, null),

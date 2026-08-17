@@ -10,7 +10,9 @@
 		"version": "node version-bump.mjs && git add manifest.json versions.json",
 		"lint": "eslint .",
 		"test": "vitest run",
-		"check": "npm run lint && npm run test && npm run build"
+		"check": "npm run lint && npm run test && npm run build",
+		"release:prepare": "npm run check && node scripts/prepare-release.mjs",
+		"release:check": "node scripts/check-release.mjs release"
 	},
 	"keywords": [],
 	"license": "0-BSD",

@@ -1,13 +1,15 @@
+import { AbcmSyncHttpError } from '../api/sync-client';
 import type {
 	ApplyOperation,
-	PreviewItem,
 	PreviewResult,
 	SyncApi,
+	SyncConflict,
 	SyncChange,
 } from '../api/sync-client';
 import { shouldSuppressEcho } from './core';
 import { portablePathKey } from './portable-path';
 import type {
+	PersistedConflictState,
 	PersistedObjectState,
 	PersistedOutboxEntry,
 	PersistedSyncState,
@@ -16,6 +18,8 @@ import type {
 } from './types';
 
 const MAX_RECENT_OPERATION_IDS = 256;
+const MAX_INVENTORY_ENTRIES = 10_000;
+const MAX_CHANGES_LIMIT = 1_000;
 
 export interface LocalReplica {
 	inventory(): Promise<ReplicaEntry[]>;
@@ -23,6 +27,7 @@ export interface LocalReplica {
 	write(path: string, content: ArrayBuffer): Promise<void>;
 	delete(path: string): Promise<void>;
 	move(previousPath: string, path: string): Promise<void>;
+	writeConflictArtifact?(conflictId: string, sourcePath: string, content: ArrayBuffer): Promise<string>;
 }
 
 export interface SyncCycleOptions {
@@ -40,10 +45,11 @@ export interface SyncCycleOptions {
 
 function cloneState(state: PersistedSyncState): PersistedSyncState {
 	return {
-		schemaVersion: 3,
+		schemaVersion: 4,
 		cursor: state.cursor,
 		objects: state.objects.map((object) => ({ ...object })),
 		outbox: state.outbox.map((entry) => ({ ...entry })),
+		conflicts: state.conflicts.map((conflict) => ({ ...conflict, local: { ...conflict.local }, server: { ...conflict.server } })),
 		recentOperationIds: [...state.recentOperationIds],
 	};
 }
@@ -55,9 +61,6 @@ async function persist(
 	await options.persistState(cloneState(state));
 }
 
-function requiresManualResolution(item: PreviewItem): boolean {
-	return item.action === 'conflict';
-}
 
 function setObject(
 	state: PersistedSyncState,
@@ -136,6 +139,7 @@ async function applyRemoteChange(
 	options: SyncCycleOptions,
 	inventory: ReplicaEntry[],
 ): Promise<void> {
+	if (state.conflicts.some((conflict) => conflict.objectId === change.objectId)) return;
 	const base = state.objects.find((object) => object.objectId === change.objectId);
 	const sourcePath = change.kind === 'move' ? change.previousPath : change.path;
 	const localEntry = localEntryByPath(inventory, sourcePath);
@@ -227,6 +231,18 @@ async function applyRemoteChange(
 	});
 }
 
+function isExpiredCursor(error: unknown): boolean {
+	return error instanceof AbcmSyncHttpError && error.code === 'SYNC_CURSOR_EXPIRED';
+}
+
+async function recoverExpiredCursor(
+	state: PersistedSyncState,
+	options: SyncCycleOptions,
+): Promise<void> {
+	state.cursor = null;
+	await persist(options, state);
+}
+
 async function pullOrderedChanges(
 	client: SyncApi,
 	local: LocalReplica,
@@ -235,13 +251,17 @@ async function pullOrderedChanges(
 ): Promise<void> {
 	if (state.cursor === null) return;
 	const inventory = await local.inventory();
+	if (inventory.length > MAX_INVENTORY_ENTRIES) {
+		throw new Error(`Vault inventory exceeds the supported ${MAX_INVENTORY_ENTRIES}-file limit.`);
+	}
+	const changesLimit = options.changesLimit ?? 100;
+	if (!Number.isInteger(changesLimit) || changesLimit < 1 || changesLimit > MAX_CHANGES_LIMIT) {
+		throw new Error(`Changes page limit must be between 1 and ${MAX_CHANGES_LIMIT}.`);
+	}
 	for (;;) {
 		const requestedCursor: string | null = state.cursor;
 		if (typeof requestedCursor !== 'string') return;
-		const page = await client.changes(
-			requestedCursor,
-			options.changesLimit ?? 100,
-		);
+		const page = await client.changes(requestedCursor, changesLimit);
 		for (const change of page.changes) {
 			await applyRemoteChange(client, local, change, state, options, inventory);
 			state.cursor = change.cursor;
@@ -278,7 +298,7 @@ async function operationFromOutbox(
 	}
 	if (entry.kind === 'move') {
 		if (entry.baseChecksum === null || entry.previousPath == null) throw new Error(`Queued local move is incomplete at '${entry.path}'.`);
-		return { operationId: entry.operationId, objectId: entry.objectId, path: entry.path, kind: 'move', previousPath: entry.previousPath, checksum: entry.checksum, baseChecksum: entry.baseChecksum };
+		return { operationId: entry.operationId, objectId: entry.objectId, path: entry.path, kind: 'move', previousPath: entry.previousPath, checksum: entry.checksum, baseChecksum: entry.baseChecksum, contentBase64: options.base64(content), contentType: entry.contentType ?? 'application/octet-stream', size: entry.size };
 	}
 	return {
 		operationId: entry.operationId,
@@ -292,6 +312,44 @@ async function operationFromOutbox(
 		contentBase64: options.base64(content),
 		contentType: entry.contentType ?? 'application/octet-stream',
 		size: entry.size,
+	};
+}
+
+async function captureConflict(
+	client: SyncApi,
+	local: LocalReplica,
+	conflictId: string,
+	options: SyncCycleOptions,
+): Promise<PersistedConflictState> {
+	if (client.getConflict === undefined || local.writeConflictArtifact === undefined) throw new Error('Conflict support is unavailable.');
+	const conflict: SyncConflict = await client.getConflict(conflictId);
+	let content: ArrayBuffer;
+	let sourcePath: string;
+	if (conflict.server.state === 'present') {
+		if (conflict.serverPath === null) throw new Error('ABCM conflict has server bytes without a server path.');
+		content = await client.readContent(conflict.serverPath);
+		if ((await options.checksum(content)) !== conflict.server.checksum || content.byteLength !== conflict.server.size) {
+			throw new Error('ABCM conflict server artifact failed checksum verification.');
+		}
+		sourcePath = conflict.serverPath;
+	} else {
+		content = new TextEncoder().encode(
+			'ABCM conflict ' + conflict.conflictId + '\nServer state: deleted\nPath: ' + conflict.path + '\n',
+		).buffer;
+		sourcePath = 'server-deleted.md';
+	}
+	const artifactPath = await local.writeConflictArtifact(conflict.conflictId, sourcePath, content);
+	return {
+		conflictId: conflict.conflictId,
+		objectId: conflict.objectId,
+		kind: conflict.kind,
+		path: conflict.path,
+		localPath: conflict.localPath,
+		serverPath: conflict.serverPath,
+		local: conflict.local,
+		server: conflict.server,
+		baseChecksum: conflict.baseChecksum,
+		artifactPath,
 	};
 }
 
@@ -311,12 +369,8 @@ async function flushOutbox(
 				entry.serverRevision !== first.serverRevision ||
 				entry.previewCursor !== first.previewCursor,
 		)
-	) {
-		throw new Error('Persisted outbox contains operations from different previews.');
-	}
-	const operations = await Promise.all(
-		state.outbox.map((entry) => operationFromOutbox(local, entry, options)),
-	);
+	) throw new Error('Persisted outbox contains operations from different previews.');
+	const operations = await Promise.all(state.outbox.map((entry) => operationFromOutbox(local, entry, options)));
 	const preview: PreviewResult = {
 		previewId: first.previewId,
 		serverRevision: first.serverRevision,
@@ -324,34 +378,32 @@ async function flushOutbox(
 		items: [],
 	};
 	const result = await client.apply(preview, operations);
-	if (
-		result.receipts.length !== operations.length ||
-		result.receipts.some(
-			(receipt, index) => receipt.operationId !== operations[index]?.operationId,
-		)
-	) {
+	if (result.receipts.length !== operations.length || result.receipts.some((receipt, index) => receipt.operationId !== operations[index]?.operationId)) {
 		throw new Error('ABCM apply receipts do not match the durable outbox.');
 	}
-	const conflict = result.receipts.find((receipt) => receipt.status === 'conflict');
-	if (conflict !== undefined) {
-		throw new Error(`ABCM reported sync conflict '${conflict.conflictId ?? 'unknown'}'.`);
-	}
 	const queued = state.outbox;
+	const acknowledgedOperationIds: string[] = [];
 	for (const [index, entry] of queued.entries()) {
 		const receipt = result.receipts[index];
 		if (receipt === undefined) continue;
-		if (entry.kind === 'delete') {
-			removeObject(state, receipt.objectId);
-		} else {
+		if (receipt.status === 'conflict') {
+			if (receipt.conflictId === undefined) throw new Error('ABCM returned a conflict receipt without conflictId.');
+			const conflict = await captureConflict(client, local, receipt.conflictId, options);
+			state.conflicts = [
+				...state.conflicts.filter((candidate) => candidate.objectId !== conflict.objectId && candidate.conflictId !== conflict.conflictId),
+				conflict,
+			];
+			continue;
+		}
+		acknowledgedOperationIds.push(receipt.operationId);
+		if (entry.kind === 'delete') removeObject(state, receipt.objectId);
+		else {
 			const checksum = receipt.checksum ?? entry.checksum;
-			if (checksum === null) throw new Error(`ABCM returned no checksum for '${entry.path}'.`);
+			if (checksum === null) throw new Error("ABCM returned no checksum for '" + entry.path + "'.");
 			setObject(state, { objectId: receipt.objectId, path: entry.path, checksum });
 		}
 	}
-	rememberOperations(
-		state,
-		result.receipts.map((receipt) => receipt.operationId),
-	);
+	rememberOperations(state, acknowledgedOperationIds);
 	state.cursor = result.receipts.at(-1)?.cursor ?? state.cursor;
 	state.outbox = [];
 	await persist(options, state);
@@ -366,6 +418,7 @@ async function applyPreviewPulls(
 	options: SyncCycleOptions,
 ): Promise<void> {
 	for (const item of preview.items) {
+		if (item.objectId !== null && state.conflicts.some((conflict) => conflict.objectId === item.objectId)) continue;
 		if (item.action === 'noop' && item.objectId !== null && item.serverChecksum !== null) {
 			setObject(state, {
 				objectId: item.objectId,
@@ -431,13 +484,21 @@ async function queuePreviewPushes(
 	inventory: ReplicaEntry[],
 	state: PersistedSyncState,
 	options: SyncCycleOptions,
+	recoveredOutbox: PersistedOutboxEntry[] | null = null,
 ): Promise<void> {
 	const entries: PersistedOutboxEntry[] = [];
 	for (const item of preview.items) {
-		if (!['create-server', 'update-server', 'delete-server', 'move-server'].includes(item.action)) {
+		if (!['create-server', 'update-server', 'delete-server', 'move-server', 'conflict'].includes(item.action)) {
 			continue;
 		}
-		if (item.objectId === null) throw new Error(`Pinned preview has no object identity at '${item.path}'.`);
+		if (item.objectId === null) throw new Error("Pinned preview has no object identity at '" + item.path + "'.");
+		if (state.conflicts.some((conflict) => conflict.objectId === item.objectId)) continue;
+		if (item.action === 'conflict' && item.localChecksum === null) {
+			const base = state.objects.find((object) => object.objectId === item.objectId);
+			if (base === undefined) throw new Error("Pinned deletion conflict has no base at '" + item.path + "'.");
+			entries.push({ operationId: options.operationId(), objectId: item.objectId, path: base.path, kind: 'delete', checksum: null, baseChecksum: base.checksum, size: null, contentType: null, previewId: preview.previewId, serverRevision: preview.serverRevision, previewCursor: preview.cursor });
+			continue;
+		}
 		if (item.action === 'delete-server') {
 			const base = state.objects.find((object) => object.objectId === item.objectId);
 			if (base === undefined || item.serverChecksum === null || base.checksum !== item.serverChecksum || localEntryByPath(inventory, item.path) !== undefined) throw new Error(`Pinned delete differs from local state at '${item.path}'.`);
@@ -455,13 +516,14 @@ async function queuePreviewPushes(
 		) {
 			throw new Error(`Local file changed after preview at '${item.path}'.`);
 		}
-		if (item.action === 'update-server' && item.serverChecksum === null) {
+		if ((item.action === 'update-server' || item.action === 'conflict') && item.serverChecksum === null && state.objects.find((object) => object.objectId === item.objectId) === undefined) {
 			throw new Error(`Update preview has no base checksum at '${item.path}'.`);
 		}
-		if (item.action === 'move-server') {
+		if (item.action === 'move-server' || (item.action === 'conflict' && state.objects.find((object) => object.objectId === item.objectId)?.path !== item.path)) {
 			const base = state.objects.find((object) => object.objectId === item.objectId);
-			if (item.previousPath === undefined || item.serverChecksum === null || base === undefined || base.checksum !== item.serverChecksum || entry.checksum !== base.checksum) throw new Error(`Pinned move differs from local state at '${item.path}'.`);
-			entries.push({ operationId: options.operationId(), objectId: item.objectId, path: item.path, kind: 'move', checksum: entry.checksum, baseChecksum: item.serverChecksum, size: entry.size, contentType: entry.contentType ?? 'application/octet-stream', previousPath: item.previousPath, previewId: preview.previewId, serverRevision: preview.serverRevision, previewCursor: preview.cursor });
+			if (base === undefined || entry.checksum === null) throw new Error(`Pinned move differs from local state at '${item.path}'.`);
+			if (item.action === 'move-server' && (item.previousPath === undefined || item.serverChecksum === null || base.checksum !== item.serverChecksum || entry.checksum !== base.checksum)) throw new Error(`Pinned move differs from local state at '${item.path}'.`);
+			entries.push({ operationId: options.operationId(), objectId: item.objectId, path: item.path, kind: 'move', checksum: entry.checksum, baseChecksum: item.action === 'conflict' ? base.checksum : item.serverChecksum, size: entry.size, contentType: entry.contentType ?? 'application/octet-stream', previousPath: item.action === 'conflict' ? base.path : item.previousPath, previewId: preview.previewId, serverRevision: preview.serverRevision, previewCursor: preview.cursor });
 			continue;
 		}
 		entries.push({
@@ -471,7 +533,7 @@ async function queuePreviewPushes(
 			kind: item.action === 'create-server' ? 'create' : 'update',
 			checksum: entry.checksum,
 			baseChecksum:
-				item.action === 'update-server' ? item.serverChecksum : null,
+				item.action === 'create-server' ? null : state.objects.find((object) => object.objectId === item.objectId)?.checksum ?? item.serverChecksum,
 			size: entry.size,
 			contentType: entry.contentType ?? 'application/octet-stream',
 			previewId: preview.previewId,
@@ -482,7 +544,7 @@ async function queuePreviewPushes(
 	if (entries.length > 100) {
 		throw new Error('Pinned preview exceeds the supported 100-operation batch.');
 	}
-	if (entries.length > 0) {
+	if (entries.length > 0 || recoveredOutbox !== null) {
 		state.outbox = entries;
 		await persist(options, state);
 	}
@@ -495,10 +557,22 @@ export async function runSyncCycle(
 ): Promise<PersistedSyncState> {
 	const state = cloneState(options.state);
 
-	await pullOrderedChanges(client, local, state, options);
-	await flushOutbox(client, local, state, options);
+	let recoveredOutbox: PersistedOutboxEntry[] | null = state.cursor === null && state.outbox.length > 0
+		? state.outbox.map((entry) => ({ ...entry }))
+		: null;
+	try {
+		await pullOrderedChanges(client, local, state, options);
+	} catch (error) {
+		if (!isExpiredCursor(error)) throw error;
+		recoveredOutbox = state.outbox.map((entry) => ({ ...entry }));
+		await recoverExpiredCursor(state, options);
+	}
+	if (recoveredOutbox === null) await flushOutbox(client, local, state, options);
 
 	const inventory = await local.inventory();
+	if (inventory.length > MAX_INVENTORY_ENTRIES) {
+		throw new Error(`Vault inventory exceeds the supported ${MAX_INVENTORY_ENTRIES}-file limit.`);
+	}
 	const preview = await client.preview(
 		state.cursor,
 		inventory,
@@ -506,19 +580,16 @@ export async function runSyncCycle(
 		options.exclude,
 		state.objects,
 	);
-	const blocked = preview.items.find(requiresManualResolution);
-	if (blocked !== undefined) {
-		throw new Error(`Sync requires manual resolution for '${blocked.path}'.`);
-	}
-	if (state.cursor === null) {
+	if (state.cursor === null && state.objects.length === 0) {
 		const confirmed = await options.confirmInitialPreview?.(preview) ?? false;
 		if (!confirmed) throw new Error('Initial synchronization was not confirmed.');
 	}
 
+	if (recoveredOutbox !== null) await queuePreviewPushes(local, preview, inventory, state, options, recoveredOutbox);
 	await applyPreviewPulls(client, local, preview, inventory, state, options);
 	state.cursor = preview.cursor;
 	await persist(options, state);
-	await queuePreviewPushes(local, preview, inventory, state, options);
+	if (recoveredOutbox === null) await queuePreviewPushes(local, preview, inventory, state, options);
 	await flushOutbox(client, local, state, options);
 	await pullOrderedChanges(client, local, state, options);
 
