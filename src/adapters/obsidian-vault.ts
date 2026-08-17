@@ -2,6 +2,7 @@ import { normalizePath, TFile, type FileManager, type Vault } from 'obsidian';
 import type { LocalReplica } from '../sync/sync-cycle';
 import type { ReplicaEntry, SyncChecksum } from '../sync';
 import { assertSafeVaultFolder, isVaultConfigPath } from '../sync/foreground-trigger';
+import { contentTypeForPath } from '../sync/content-type';
 
 const CONFLICT_ROOT = '_ABCM Conflicts';
 
@@ -57,7 +58,7 @@ export class ObsidianVaultReplica implements LocalReplica {
 				path,
 				checksum: await checksum(content),
 				size: content.byteLength,
-				contentType: 'application/octet-stream',
+				contentType: contentTypeForPath(path),
 			});
 		}
 		return entries.sort((left, right) => left.path.localeCompare(right.path));
