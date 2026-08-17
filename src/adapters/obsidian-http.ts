@@ -1,5 +1,5 @@
 import { requestUrl } from 'obsidian';
-import { AbcmTransportError, type HttpRequest, type HttpResponse, type HttpTransport } from '../api/http';
+import { AbcmTransportError, responseJson, transportFailureMessage, type HttpRequest, type HttpResponse, type HttpTransport } from '../api/http';
 
 export class ObsidianHttpTransport implements HttpTransport {
 	async request(request: HttpRequest): Promise<HttpResponse> {
@@ -16,11 +16,11 @@ export class ObsidianHttpTransport implements HttpTransport {
 			return {
 				status: response.status,
 				headers: response.headers,
-				json: response.json,
+				json: responseJson(response.headers, () => response.json),
 				arrayBuffer: response.arrayBuffer,
 			};
 		} catch (error) {
-			throw new AbcmTransportError('ABCM service is unreachable.', error);
+			throw new AbcmTransportError(transportFailureMessage(error), error);
 		}
 	}
 }
