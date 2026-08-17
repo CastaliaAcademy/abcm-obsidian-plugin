@@ -61,18 +61,19 @@ export interface PersistedOutboxEntry {
 	operationId: string;
 	objectId: string;
 	path: string;
-	kind: 'create' | 'update';
-	checksum: SyncChecksum;
+	kind: 'create' | 'update' | 'delete' | 'move';
+	checksum: SyncChecksum | null;
 	baseChecksum: SyncChecksum | null;
-	size: number;
-	contentType: string;
+	size: number | null;
+	contentType: string | null;
+	previousPath?: string | null;
 	previewId: string;
 	serverRevision: string;
 	previewCursor: string;
 }
 
 export interface PersistedSyncState {
-	schemaVersion: 2;
+	schemaVersion: 3;
 	cursor: string | null;
 	objects: PersistedObjectState[];
 	outbox: PersistedOutboxEntry[];

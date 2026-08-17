@@ -21,6 +21,8 @@ export interface LocalReplica {
 	inventory(): Promise<ReplicaEntry[]>;
 	read(path: string): Promise<ArrayBuffer>;
 	write(path: string, content: ArrayBuffer): Promise<void>;
+	delete(path: string): Promise<void>;
+	move(previousPath: string, path: string): Promise<void>;
 }
 
 export interface SyncCycleOptions {
@@ -38,7 +40,7 @@ export interface SyncCycleOptions {
 
 function cloneState(state: PersistedSyncState): PersistedSyncState {
 	return {
-		schemaVersion: 2,
+		schemaVersion: 3,
 		cursor: state.cursor,
 		objects: state.objects.map((object) => ({ ...object })),
 		outbox: state.outbox.map((entry) => ({ ...entry })),
@@ -54,13 +56,7 @@ async function persist(
 }
 
 function requiresManualResolution(item: PreviewItem): boolean {
-	return [
-		'delete-local',
-		'delete-server',
-		'move-local',
-		'move-server',
-		'conflict',
-	].includes(item.action);
+	return item.action === 'conflict';
 }
 
 function setObject(
@@ -80,6 +76,21 @@ function setObject(
 		...state.objects.filter((candidate) => candidate.objectId !== object.objectId),
 		object,
 	];
+}
+
+function removeObject(state: PersistedSyncState, objectId: string): void {
+	state.objects = state.objects.filter((object) => object.objectId !== objectId);
+}
+
+function removeInventoryPath(inventory: ReplicaEntry[], path: string): void {
+	const key = portablePathKey(path);
+	const index = inventory.findIndex((entry) => portablePathKey(entry.path) === key);
+	if (index !== -1) inventory.splice(index, 1);
+}
+
+function upsertInventory(inventory: ReplicaEntry[], entry: ReplicaEntry): void {
+	removeInventoryPath(inventory, entry.path);
+	inventory.push(entry);
 }
 
 function rememberOperations(
@@ -120,30 +131,62 @@ function localEntryByPath(
 async function applyRemoteChange(
 	client: SyncApi,
 	local: LocalReplica,
-	change: Extract<SyncChange, { kind: 'create' | 'update' }>,
+	change: SyncChange,
 	state: PersistedSyncState,
 	options: SyncCycleOptions,
 	inventory: ReplicaEntry[],
 ): Promise<void> {
-	const localEntry = localEntryByPath(inventory, change.path);
 	const base = state.objects.find((object) => object.objectId === change.objectId);
+	const sourcePath = change.kind === 'move' ? change.previousPath : change.path;
+	const localEntry = localEntryByPath(inventory, sourcePath);
 	const echoIds = new Set([
 		...state.recentOperationIds,
 		...state.outbox.map((entry) => entry.operationId),
 	]);
 
 	if (shouldSuppressEcho(change, options.deviceId, echoIds)) {
-		if (localEntry?.checksum !== change.checksum) {
-			throw new Error(`Local echo verification failed at '${change.path}'.`);
+		if (change.kind === 'delete') {
+			if (localEntry !== undefined) throw new Error(`Local delete echo verification failed at '${change.path}'.`);
+			removeObject(state, change.objectId);
+		} else {
+			const target = localEntryByPath(inventory, change.path);
+			if (target?.checksum !== change.checksum) throw new Error(`Local echo verification failed at '${change.path}'.`);
+			setObject(state, { objectId: change.objectId, path: change.path, checksum: change.checksum });
 		}
 		state.recentOperationIds = state.recentOperationIds.filter(
 			(operationId) => operationId !== change.operationId,
 		);
-		setObject(state, {
-			objectId: change.objectId,
-			path: change.path,
-			checksum: change.checksum,
-		});
+		return;
+	}
+
+	if (change.kind === 'delete') {
+		if (base === undefined || base.checksum !== change.baseChecksum) {
+			throw new Error(`Remote delete has no matching base at '${change.path}'.`);
+		}
+		if (localEntry !== undefined && localEntry.checksum !== base.checksum) {
+			throw new Error(`Concurrent local change detected at '${change.path}'.`);
+		}
+		if (localEntry !== undefined) await local.delete(localEntry.path);
+		removeInventoryPath(inventory, sourcePath);
+		removeObject(state, change.objectId);
+		return;
+	}
+
+	if (change.kind === 'move') {
+		if (base === undefined || portablePathKey(base.path) !== portablePathKey(change.previousPath) || base.checksum !== change.baseChecksum) {
+			throw new Error(`Remote move has no matching base at '${change.previousPath}'.`);
+		}
+		const target = localEntryByPath(inventory, change.path);
+		if (localEntry === undefined || localEntry.checksum !== base.checksum || target !== undefined) {
+			throw new Error(`Concurrent local change detected at '${change.previousPath}'.`);
+		}
+		await local.move(change.previousPath, change.path);
+		removeInventoryPath(inventory, change.previousPath);
+		if (change.checksum !== base.checksum) {
+			await verifiedRemoteContent(client, local, change.path, change.checksum, options);
+		}
+		upsertInventory(inventory, { objectId: change.objectId, path: change.path, checksum: change.checksum, size: change.size, contentType: change.contentType });
+		setObject(state, { objectId: change.objectId, path: change.path, checksum: change.checksum });
 		return;
 	}
 
@@ -175,11 +218,7 @@ async function applyRemoteChange(
 			size: change.size,
 			contentType: change.contentType,
 		};
-		const existingIndex = inventory.findIndex(
-			(entry) => portablePathKey(entry.path) === portablePathKey(change.path),
-		);
-		if (existingIndex === -1) inventory.push(nextEntry);
-		else inventory[existingIndex] = nextEntry;
+		upsertInventory(inventory, nextEntry);
 	}
 	setObject(state, {
 		objectId: change.objectId,
@@ -203,17 +242,7 @@ async function pullOrderedChanges(
 			requestedCursor,
 			options.changesLimit ?? 100,
 		);
-		const lastByObject = new Map<string, number>();
-		page.changes.forEach((change, index) => {
-			lastByObject.set(change.objectId, index);
-		});
-		for (const [index, change] of page.changes.entries()) {
-			if (lastByObject.get(change.objectId) !== index) continue;
-			if (change.kind === 'delete' || change.kind === 'move') {
-				throw new Error(
-					`Sync requires manual resolution for '${change.path}'.`,
-				);
-			}
+		for (const change of page.changes) {
 			await applyRemoteChange(client, local, change, state, options, inventory);
 			state.cursor = change.cursor;
 			await persist(options, state);
@@ -234,12 +263,22 @@ async function operationFromOutbox(
 	entry: PersistedOutboxEntry,
 	options: SyncCycleOptions,
 ): Promise<ApplyOperation> {
+	if (entry.kind === 'delete') {
+		if (localEntryByPath(await local.inventory(), entry.path) !== undefined || entry.baseChecksum === null) {
+			throw new Error(`Queued local delete is no longer valid at '${entry.path}'.`);
+		}
+		return { operationId: entry.operationId, objectId: entry.objectId, path: entry.path, kind: 'delete', baseChecksum: entry.baseChecksum };
+	}
 	const content = await local.read(entry.path);
 	if (
-		content.byteLength !== entry.size ||
+		entry.checksum === null || entry.size === null || content.byteLength !== entry.size ||
 		(await options.checksum(content)) !== entry.checksum
 	) {
 		throw new Error(`Queued local file changed before acknowledgement at '${entry.path}'.`);
+	}
+	if (entry.kind === 'move') {
+		if (entry.baseChecksum === null || entry.previousPath == null) throw new Error(`Queued local move is incomplete at '${entry.path}'.`);
+		return { operationId: entry.operationId, objectId: entry.objectId, path: entry.path, kind: 'move', previousPath: entry.previousPath, checksum: entry.checksum, baseChecksum: entry.baseChecksum };
 	}
 	return {
 		operationId: entry.operationId,
@@ -251,7 +290,7 @@ async function operationFromOutbox(
 			? {}
 			: { baseChecksum: entry.baseChecksum }),
 		contentBase64: options.base64(content),
-		contentType: entry.contentType,
+		contentType: entry.contentType ?? 'application/octet-stream',
 		size: entry.size,
 	};
 }
@@ -301,11 +340,13 @@ async function flushOutbox(
 	for (const [index, entry] of queued.entries()) {
 		const receipt = result.receipts[index];
 		if (receipt === undefined) continue;
-		setObject(state, {
-			objectId: receipt.objectId,
-			path: entry.path,
-			checksum: receipt.checksum ?? entry.checksum,
-		});
+		if (entry.kind === 'delete') {
+			removeObject(state, receipt.objectId);
+		} else {
+			const checksum = receipt.checksum ?? entry.checksum;
+			if (checksum === null) throw new Error(`ABCM returned no checksum for '${entry.path}'.`);
+			setObject(state, { objectId: receipt.objectId, path: entry.path, checksum });
+		}
 	}
 	rememberOperations(
 		state,
@@ -331,6 +372,28 @@ async function applyPreviewPulls(
 				path: item.path,
 				checksum: item.serverChecksum,
 			});
+		}
+		if (item.action === 'delete-local') {
+			if (item.objectId === null) throw new Error(`Remote delete identity is incomplete at '${item.path}'.`);
+			const base = state.objects.find((object) => object.objectId === item.objectId);
+			const localEntry = localEntryByPath(inventory, item.path);
+			if (base === undefined || (localEntry !== undefined && localEntry.checksum !== base.checksum)) throw new Error(`Concurrent local change detected at '${item.path}'.`);
+			if (localEntry !== undefined) await local.delete(localEntry.path);
+			removeInventoryPath(inventory, item.path);
+			removeObject(state, item.objectId);
+			continue;
+		}
+		if (item.action === 'move-local') {
+			if (item.objectId === null || item.serverChecksum === null || item.previousPath === undefined) throw new Error(`Remote move identity is incomplete at '${item.path}'.`);
+			const base = state.objects.find((object) => object.objectId === item.objectId);
+			const source = localEntryByPath(inventory, item.previousPath);
+			if (base === undefined || source?.checksum !== base.checksum || localEntryByPath(inventory, item.path) !== undefined) throw new Error(`Concurrent local change detected at '${item.previousPath}'.`);
+			await local.move(item.previousPath, item.path);
+			removeInventoryPath(inventory, item.previousPath);
+			if (item.serverChecksum !== base.checksum) await verifiedRemoteContent(client, local, item.path, item.serverChecksum, options);
+			upsertInventory(inventory, { objectId: item.objectId, path: item.path, checksum: item.serverChecksum, size: item.size ?? source.size, contentType: source.contentType });
+			setObject(state, { objectId: item.objectId, path: item.path, checksum: item.serverChecksum });
+			continue;
 		}
 		if (item.action !== 'create-local' && item.action !== 'update-local') continue;
 		if (item.objectId === null || item.serverChecksum === null) {
@@ -371,11 +434,18 @@ async function queuePreviewPushes(
 ): Promise<void> {
 	const entries: PersistedOutboxEntry[] = [];
 	for (const item of preview.items) {
-		if (item.action !== 'create-server' && item.action !== 'update-server') {
+		if (!['create-server', 'update-server', 'delete-server', 'move-server'].includes(item.action)) {
+			continue;
+		}
+		if (item.objectId === null) throw new Error(`Pinned preview has no object identity at '${item.path}'.`);
+		if (item.action === 'delete-server') {
+			const base = state.objects.find((object) => object.objectId === item.objectId);
+			if (base === undefined || item.serverChecksum === null || base.checksum !== item.serverChecksum || localEntryByPath(inventory, item.path) !== undefined) throw new Error(`Pinned delete differs from local state at '${item.path}'.`);
+			entries.push({ operationId: options.operationId(), objectId: item.objectId, path: item.path, kind: 'delete', checksum: null, baseChecksum: item.serverChecksum, size: null, contentType: null, previewId: preview.previewId, serverRevision: preview.serverRevision, previewCursor: preview.cursor });
 			continue;
 		}
 		const entry = localEntryByPath(inventory, item.path);
-		if (entry === undefined || item.objectId === null) {
+		if (entry === undefined) {
 			throw new Error(`Pinned preview differs from local inventory at '${item.path}'.`);
 		}
 		const content = await local.read(item.path);
@@ -387,6 +457,12 @@ async function queuePreviewPushes(
 		}
 		if (item.action === 'update-server' && item.serverChecksum === null) {
 			throw new Error(`Update preview has no base checksum at '${item.path}'.`);
+		}
+		if (item.action === 'move-server') {
+			const base = state.objects.find((object) => object.objectId === item.objectId);
+			if (item.previousPath === undefined || item.serverChecksum === null || base === undefined || base.checksum !== item.serverChecksum || entry.checksum !== base.checksum) throw new Error(`Pinned move differs from local state at '${item.path}'.`);
+			entries.push({ operationId: options.operationId(), objectId: item.objectId, path: item.path, kind: 'move', checksum: entry.checksum, baseChecksum: item.serverChecksum, size: entry.size, contentType: entry.contentType ?? 'application/octet-stream', previousPath: item.previousPath, previewId: preview.previewId, serverRevision: preview.serverRevision, previewCursor: preview.cursor });
+			continue;
 		}
 		entries.push({
 			operationId: options.operationId(),
@@ -428,6 +504,7 @@ export async function runSyncCycle(
 		inventory,
 		options.include,
 		options.exclude,
+		state.objects,
 	);
 	const blocked = preview.items.find(requiresManualResolution);
 	if (blocked !== undefined) {

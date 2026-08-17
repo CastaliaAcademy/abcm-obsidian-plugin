@@ -23,6 +23,8 @@ describe('initial synchronization confirmation', () => {
 				writes.push(path);
 				return Promise.resolve();
 			},
+			delete: () => Promise.reject(new Error('Unexpected local delete.')),
+			move: () => Promise.reject(new Error('Unexpected local move.')),
 		};
 		const client: SyncApi = {
 			preview: () => Promise.resolve({

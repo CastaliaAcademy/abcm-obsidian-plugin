@@ -1,5 +1,5 @@
 import type { HttpTransport } from './http';
-import type { ReplicaEntry, SyncChecksum } from '../sync';
+import type { BaseEntry, ReplicaEntry, SyncChecksum } from '../sync';
 
 export type PreviewAction =
 	| 'create-local'
@@ -31,17 +31,31 @@ export interface PreviewResult {
 	items: PreviewItem[];
 }
 
-export interface ApplyOperation {
+interface ApplyOperationBase {
 	operationId: string;
 	objectId: string;
 	path: string;
-	kind: 'create' | 'update';
-	checksum: SyncChecksum;
-	baseChecksum?: SyncChecksum;
-	contentBase64: string;
-	contentType: string;
-	size: number;
 }
+
+export type ApplyOperation =
+	| (ApplyOperationBase & {
+		kind: 'create' | 'update';
+		checksum: SyncChecksum;
+		baseChecksum?: SyncChecksum;
+		contentBase64: string;
+		contentType: string;
+		size: number;
+	})
+	| (ApplyOperationBase & {
+		kind: 'delete';
+		baseChecksum: SyncChecksum;
+	})
+	| (ApplyOperationBase & {
+		kind: 'move';
+		previousPath: string;
+		checksum: SyncChecksum;
+		baseChecksum: SyncChecksum;
+	});
 
 export interface ApplyReceipt {
 	operationId: string;
@@ -108,6 +122,7 @@ export interface SyncApi {
 		inventory: ReplicaEntry[],
 		include: string[],
 		exclude: string[],
+		base?: BaseEntry[],
 	): Promise<PreviewResult>;
 	changes(cursor: string, limit: number): Promise<ChangesResult>;
 	readContent(path: string): Promise<ArrayBuffer>;
@@ -139,6 +154,7 @@ export class AbcmSyncClient implements SyncApi {
 		inventory: ReplicaEntry[],
 		include: string[],
 		exclude: string[],
+		base?: BaseEntry[],
 	): Promise<PreviewResult> {
 		const response = await this.transport.request({
 			url: `${this.base()}/preview`,
@@ -154,6 +170,7 @@ export class AbcmSyncClient implements SyncApi {
 				})),
 				include,
 				exclude,
+				...(base === undefined ? {} : { base }),
 			}),
 		});
 		if (response.status !== 200) {

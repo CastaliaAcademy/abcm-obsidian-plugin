@@ -31,39 +31,66 @@ function parseObject(value: unknown): PersistedObjectState {
 
 function parseOutbox(value: unknown): PersistedOutboxEntry {
 	if (!isRecord(value)) throw new Error('Persisted outbox entry is invalid.');
+	const kinds = new Set(['create', 'update', 'delete', 'move']);
 	if (
 		typeof value.operationId !== 'string' ||
 		typeof value.objectId !== 'string' ||
 		typeof value.path !== 'string' ||
-		(value.kind !== 'create' && value.kind !== 'update') ||
-		typeof value.size !== 'number' ||
-		!Number.isSafeInteger(value.size) ||
-		value.size < 0 ||
-		typeof value.contentType !== 'string' ||
+		typeof value.kind !== 'string' ||
+		!kinds.has(value.kind) ||
 		typeof value.previewId !== 'string' ||
 		typeof value.serverRevision !== 'string' ||
 		typeof value.previewCursor !== 'string'
 	) {
 		throw new Error('Persisted outbox identity is invalid.');
 	}
+	const kind = value.kind as PersistedOutboxEntry['kind'];
+	const size = value.size;
+	if (
+		size !== null &&
+		(typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0)
+	) {
+		throw new Error('Persisted operation size is invalid.');
+	}
+	const contentType = value.contentType;
+	if (contentType !== null && typeof contentType !== 'string') {
+		throw new Error('Persisted operation content type is invalid.');
+	}
 	assertPortablePath(value.path);
-	assertChecksum(value.checksum);
+	if (value.checksum !== null) assertChecksum(value.checksum);
 	if (value.baseChecksum !== null) assertChecksum(value.baseChecksum);
+	const contentOperation = value.kind === 'create' || value.kind === 'update';
+	if (contentOperation) {
+		assertChecksum(value.checksum);
+		if (
+			typeof value.size !== 'number' || !Number.isSafeInteger(value.size) ||
+			value.size < 0 || typeof value.contentType !== 'string'
+		) throw new Error('Persisted content operation is invalid.');
+	}
 	if (value.kind === 'create' && value.baseChecksum !== null) {
 		throw new Error('Persisted create operation has a base checksum.');
 	}
-	if (value.kind === 'update' && value.baseChecksum === null) {
-		throw new Error('Persisted update operation has no base checksum.');
+	if (value.kind !== 'create' && value.baseChecksum === null) {
+		throw new Error('Persisted mutation has no base checksum.');
+	}
+	if (value.kind === 'delete' && (value.checksum !== null || value.size !== null || value.contentType !== null)) {
+		throw new Error('Persisted delete operation contains content metadata.');
+	}
+	if (value.kind === 'move') {
+		assertChecksum(value.checksum);
+		if (typeof value.previousPath !== 'string') throw new Error('Persisted move has no source path.');
+		assertPortablePath(value.previousPath);
 	}
 	return {
 		operationId: value.operationId,
 		objectId: value.objectId,
 		path: value.path,
-		kind: value.kind,
+		kind,
 		checksum: value.checksum,
 		baseChecksum: value.baseChecksum,
-		size: value.size,
-		contentType: value.contentType,
+		size,
+		contentType,
+		...(typeof value.previousPath === 'string' ? { previousPath: value.previousPath } : {}),
 		previewId: value.previewId,
 		serverRevision: value.serverRevision,
 		previewCursor: value.previewCursor,
@@ -88,7 +115,7 @@ function assertUniqueObjects(objects: PersistedObjectState[]): void {
 
 export function createInitialSyncState(): PersistedSyncState {
 	return {
-		schemaVersion: 2,
+		schemaVersion: 3,
 		cursor: null,
 		objects: [],
 		outbox: [],
@@ -97,7 +124,7 @@ export function createInitialSyncState(): PersistedSyncState {
 }
 
 export function hydrateSyncState(value: unknown): PersistedSyncState {
-	if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) {
+	if (!isRecord(value) || ![1, 2, 3].includes(value.schemaVersion as number)) {
 		throw new Error('Unsupported persisted sync state.');
 	}
 	if (!(typeof value.cursor === 'string' || value.cursor === null)) {
@@ -129,7 +156,7 @@ export function hydrateSyncState(value: unknown): PersistedSyncState {
 		throw new Error('Persisted recent operation identities contain duplicates.');
 	}
 	return {
-		schemaVersion: 2,
+		schemaVersion: 3,
 		cursor: value.cursor,
 		objects,
 		outbox: value.outbox.map(parseOutbox),

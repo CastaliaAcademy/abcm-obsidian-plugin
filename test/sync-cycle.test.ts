@@ -50,6 +50,19 @@ class MemoryReplica implements LocalReplica {
 		this.files.set(path, content);
 		return Promise.resolve();
 	}
+
+	delete(path: string): Promise<void> {
+		if (!this.files.delete(path)) throw new Error(`Missing local file '${path}'.`);
+		return Promise.resolve();
+	}
+
+	move(previousPath: string, path: string): Promise<void> {
+		const content = this.files.get(previousPath);
+		if (content === undefined || this.files.has(path)) throw new Error('Unsafe local move.');
+		this.files.delete(previousPath);
+		this.files.set(path, content);
+		return Promise.resolve();
+	}
 }
 
 function emptyChanges(cursor: string): ChangesResult {

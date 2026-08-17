@@ -129,7 +129,7 @@ export default class AbcmSyncPlugin extends Plugin {
 			);
 			await runSyncCycle(
 				client,
-				new ObsidianVaultReplica(this.app.vault, settings.vaultFolder),
+				new ObsidianVaultReplica(this.app.vault, this.app.fileManager, settings.vaultFolder),
 				{
 					state,
 					deviceId: settings.deviceId,

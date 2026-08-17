@@ -37,13 +37,22 @@ describe('ABCM sync REST client', () => {
 			checksum: `sha256:${'a'.repeat(64)}`,
 			size: 1,
 			contentType: 'text/markdown',
-		}], [], []);
+		}], [], [], [{
+			objectId: 'obj_00000001',
+			path: 'a.md',
+			checksum: `sha256:${'a'.repeat(64)}`,
+		}]);
 		const body = JSON.parse(request?.body ?? '{}') as Record<string, unknown>;
 		expect(body.inventory).toEqual([{
 			path: 'a.md',
 			checksum: `sha256:${'a'.repeat(64)}`,
 			size: 1,
 			contentType: 'text/markdown',
+		}]);
+		expect(body.base).toEqual([{
+			objectId: 'obj_00000001',
+			path: 'a.md',
+			checksum: `sha256:${'a'.repeat(64)}`,
 		}]);
 	});
 

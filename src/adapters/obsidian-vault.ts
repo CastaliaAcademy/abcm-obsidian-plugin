@@ -1,6 +1,8 @@
-import { normalizePath, TFile, type Vault } from 'obsidian';
+import { normalizePath, TFile, type FileManager, type Vault } from 'obsidian';
 import type { LocalReplica } from '../sync/sync-cycle';
 import type { ReplicaEntry, SyncChecksum } from '../sync';
+
+const CONFLICT_ROOT = '_ABCM Conflicts';
 
 async function checksum(content: ArrayBuffer): Promise<SyncChecksum> {
 	const digest = await crypto.subtle.digest('SHA-256', content);
@@ -10,6 +12,7 @@ async function checksum(content: ArrayBuffer): Promise<SyncChecksum> {
 export class ObsidianVaultReplica implements LocalReplica {
 	constructor(
 		private readonly vault: Vault,
+		private readonly fileManager: FileManager,
 		private readonly folder: string,
 	) {}
 
@@ -17,6 +20,18 @@ export class ObsidianVaultReplica implements LocalReplica {
 		if (this.folder === '') return file.path;
 		const prefix = `${this.folder}/`;
 		return file.path.startsWith(prefix) ? file.path.slice(prefix.length) : null;
+	}
+
+	private async ensureParent(absolute: string): Promise<void> {
+		const segments = absolute.split('/');
+		segments.pop();
+		let current = '';
+		for (const segment of segments) {
+			current = current === '' ? segment : `${current}/${segment}`;
+			if (this.vault.getAbstractFileByPath(current) === null) {
+				await this.vault.createFolder(current);
+			}
+		}
 	}
 
 	private absolute(path: string): string {
@@ -27,7 +42,7 @@ export class ObsidianVaultReplica implements LocalReplica {
 		const entries: ReplicaEntry[] = [];
 		for (const file of this.vault.getFiles()) {
 			const path = this.relative(file);
-			if (path === null) continue;
+			if (path === null || path === CONFLICT_ROOT || path.startsWith(`${CONFLICT_ROOT}/`)) continue;
 			const content = await this.vault.readBinary(file);
 			entries.push({
 				objectId: null,
@@ -48,18 +63,27 @@ export class ObsidianVaultReplica implements LocalReplica {
 
 	async write(path: string, content: ArrayBuffer): Promise<void> {
 		const absolute = this.absolute(path);
-		const segments = absolute.split('/');
-		segments.pop();
-		let current = '';
-		for (const segment of segments) {
-			current = current === '' ? segment : `${current}/${segment}`;
-			if (this.vault.getAbstractFileByPath(current) === null) {
-				await this.vault.createFolder(current);
-			}
-		}
+		await this.ensureParent(absolute);
 		const existing = this.vault.getAbstractFileByPath(absolute);
 		if (existing instanceof TFile) await this.vault.modifyBinary(existing, content);
 		else if (existing === null) await this.vault.createBinary(absolute, content);
 		else throw new Error(`Vault path '${path}' is not a file.`);
+	}
+
+	async delete(path: string): Promise<void> {
+		const file = this.vault.getFileByPath(this.absolute(path));
+		if (file === null) throw new Error(`Vault file '${path}' does not exist.`);
+		await this.fileManager.trashFile(file);
+	}
+
+	async move(previousPath: string, path: string): Promise<void> {
+		const source = this.vault.getFileByPath(this.absolute(previousPath));
+		if (source === null) throw new Error(`Vault file '${previousPath}' does not exist.`);
+		const target = this.absolute(path);
+		if (this.vault.getAbstractFileByPath(target) !== null) {
+			throw new Error(`Vault path '${path}' already exists.`);
+		}
+		await this.ensureParent(target);
+		await this.vault.rename(source, target);
 	}
 }
