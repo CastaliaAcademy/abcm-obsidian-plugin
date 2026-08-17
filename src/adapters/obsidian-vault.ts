@@ -1,6 +1,7 @@
 import { normalizePath, TFile, type FileManager, type Vault } from 'obsidian';
 import type { LocalReplica } from '../sync/sync-cycle';
 import type { ReplicaEntry, SyncChecksum } from '../sync';
+import { assertSafeVaultFolder, isVaultConfigPath } from '../sync/foreground-trigger';
 
 const CONFLICT_ROOT = '_ABCM Conflicts';
 
@@ -14,7 +15,9 @@ export class ObsidianVaultReplica implements LocalReplica {
 		private readonly vault: Vault,
 		private readonly fileManager: FileManager,
 		private readonly folder: string,
-	) {}
+	) {
+		assertSafeVaultFolder(folder, vault.configDir);
+	}
 
 	private relative(file: TFile): string | null {
 		if (this.folder === '') return file.path;
@@ -35,12 +38,17 @@ export class ObsidianVaultReplica implements LocalReplica {
 	}
 
 	private absolute(path: string): string {
-		return normalizePath(this.folder === '' ? path : `${this.folder}/${path}`);
+		const absolute = normalizePath(this.folder === '' ? path : `${this.folder}/${path}`);
+		if (isVaultConfigPath(absolute, this.vault.configDir)) {
+			throw new Error('ABCM Sync cannot access the Obsidian configuration directory.');
+		}
+		return absolute;
 	}
 
 	async inventory(): Promise<ReplicaEntry[]> {
 		const entries: ReplicaEntry[] = [];
 		for (const file of this.vault.getFiles()) {
+			if (isVaultConfigPath(file.path, this.vault.configDir)) continue;
 			const path = this.relative(file);
 			if (path === null || path === CONFLICT_ROOT || path.startsWith(`${CONFLICT_ROOT}/`)) continue;
 			const content = await this.vault.readBinary(file);

@@ -37,6 +37,16 @@ export class ForegroundSyncTrigger {
 
 const CONFLICT_ROOT = '_ABCM Conflicts';
 
+export function isVaultConfigPath(path: string, configDir: string): boolean {
+	return path === configDir || path.startsWith(`${configDir}/`);
+}
+
+export function assertSafeVaultFolder(vaultFolder: string, configDir: string): void {
+	if (vaultFolder !== '' && isVaultConfigPath(vaultFolder, configDir)) {
+		throw new Error('ABCM Sync vault folder cannot be inside the Obsidian configuration directory.');
+	}
+}
+
 export function isSynchronizedVaultPath(path: string, vaultFolder: string, configDir: string): boolean {
 	const relative = vaultFolder === ''
 		? path
@@ -45,7 +55,7 @@ export function isSynchronizedVaultPath(path: string, vaultFolder: string, confi
 			: '';
 	if (relative === '') return false;
 	return !(
-		relative === configDir || relative.startsWith(`${configDir}/`) ||
+		isVaultConfigPath(relative, configDir) ||
 		relative === CONFLICT_ROOT || relative.startsWith(`${CONFLICT_ROOT}/`)
 	);
 }
