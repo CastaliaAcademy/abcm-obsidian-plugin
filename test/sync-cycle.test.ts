@@ -33,6 +33,7 @@ class MemoryReplica implements LocalReplica {
 	constructor(
 		private readonly files: Map<string, ArrayBuffer>,
 		private readonly checksumFn: (content: ArrayBuffer) => Promise<SyncChecksum> = checksum,
+		private readonly contentType = 'text/markdown',
 	) {}
 
 	inventory(): Promise<ReplicaEntry[]> {
@@ -42,7 +43,7 @@ class MemoryReplica implements LocalReplica {
 				path,
 				checksum: await this.checksumFn(content),
 				size: content.byteLength,
-				contentType: 'text/markdown',
+				contentType: this.contentType,
 			})),
 		);
 	}
@@ -305,7 +306,7 @@ describe('restart-safe foreground synchronization cycle', () => {
 		const updated = new Uint8Array([0x00, 0xff, 0x0d, 0x0a, 0x80, 0x42]).buffer;
 		const originalChecksum = await sha256(original);
 		const updatedChecksum = await sha256(updated);
-		const replica = new MemoryReplica(new Map([['probe.bin', original]]), sha256);
+		const replica = new MemoryReplica(new Map([['probe.bin', original]]), sha256, 'application/octet-stream');
 		const state: PersistedSyncState = {
 			...createInitialSyncState(),
 			cursor: 'cursor_00000001',
@@ -356,6 +357,67 @@ describe('restart-safe foreground synchronization cycle', () => {
 			path: 'probe.bin',
 			checksum: updatedChecksum,
 		});
+	});
+
+	it('pushes exact non-text bytes with matching size, checksum, and content type', async () => {
+		const content = new Uint8Array([0x00, 0xff, 0x0d, 0x0a, 0x80, 0x42]).buffer;
+		const contentChecksum = await sha256(content);
+		const replica = new MemoryReplica(
+			new Map([['probe.bin', content]]),
+			sha256,
+			'application/octet-stream',
+		);
+		const applied: ApplyOperation[] = [];
+		const client: SyncApi = {
+			preview: () => Promise.resolve(preview('cursor_00000001', [{
+				action: 'create-server',
+				objectId: 'obj_00000001',
+				path: 'probe.bin',
+				localChecksum: contentChecksum,
+				serverChecksum: null,
+				size: content.byteLength,
+			}])),
+			changes: (cursor) => Promise.resolve(emptyChanges(cursor)),
+			readContent: () => Promise.reject(new Error('Unexpected read.')),
+			apply: (_pinned, operations) => {
+				applied.push(...operations);
+				return Promise.resolve({ receipts: [{
+					status: 'applied',
+					operationId: operations[0]?.operationId ?? '',
+					cursor: 'cursor_00000002',
+					objectId: 'obj_00000001',
+					checksum: contentChecksum,
+				}] });
+			},
+		};
+		const base64 = (value: ArrayBuffer): string => {
+			let binary = '';
+			for (const byte of new Uint8Array(value)) binary += String.fromCharCode(byte);
+			return btoa(binary);
+		};
+
+		const result = await runSyncCycle(client, replica, {
+			state: { ...createInitialSyncState(), cursor: 'cursor_00000001' },
+			deviceId: 'device_00000001',
+			include: [],
+			exclude: [],
+			operationId: () => 'op_binary000002',
+			checksum: sha256,
+			base64,
+			confirmInitialPreview: () => Promise.resolve(true),
+			persistState: () => undefined,
+		});
+
+		expect(applied).toHaveLength(1);
+		expect(applied[0]).toMatchObject({
+			kind: 'create',
+			path: 'probe.bin',
+			checksum: contentChecksum,
+			size: content.byteLength,
+			contentType: 'application/octet-stream',
+			contentBase64: base64(content),
+		});
+		expect(result.cursor).toBe('cursor_00000002');
 	});
 
 	it('does not advance the cursor when a remote vault write fails', async () => {
