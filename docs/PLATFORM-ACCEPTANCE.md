@@ -101,7 +101,7 @@ Expected: no silent loss, no timestamp winner, and every unaffected object conve
 
 ## Windows 11
 
-- [ ] Install and pair
+- [x] Install and pair
 - [ ] Initial preview has no pre-confirmation mutation
 - [ ] Create/update/delete/rename both directions
 - [ ] Network loss, sleep, restart, and recovery
@@ -144,3 +144,45 @@ correctiveCommits: []
 finalDecision: pending | pass | fail
 reviewedAtUtc: ""
 ```
+
+```yaml
+runId: PA-20260818-windows-01
+dateUtc: 2026-08-17T23:11:27Z
+platform: windows-11
+osVersion: "10.0.26200.9168"
+deviceModel: DESKTOP-JBDGE1E
+obsidianVersion: 1.13.7
+pluginCommit: 16e9f43c980cf669ced4488e7ed26704b1d0b22f
+pluginVersion: 0.1.0
+releaseAssetSha256:
+  main.js: d467de2aec8a62b8355308e0c06cde23dfd29774c3cc3162d510b052cc033630
+  manifest.json: d8e6a989bf720c6104e41d076dc4255c3d7557cdadebb1aabcc811469e128d7e
+  styles.css: 8764243cae0351ebdbb76e770c4feffcb1956ff42420d4ec159212dc7a8535ed
+abcmCommit: 9937dcde49f2c40396f650701fe98ab89820e91c
+abcmVersion: 0.1.0
+endpointType: http-loopback
+workspaceId: abcm-acceptance-windows
+projectId: fixture
+vaultFolder: ABCM Replicas/windows-acceptance
+datasetDigest: sha256:9b5e39f324e6fc2887ef9ac22d16af95db8043bdca565560a3bf24d6623a6936
+reviewer: egor (operator) + Codex (checksums and server journal)
+scenarioResults:
+  P01:
+    status: partial
+    evidence:
+      - pairing redeemed into the server-owned abcm-acceptance-windows/fixture scope
+      - first successful preview planned two create-local actions
+      - scope.yaml sha256:c835112b343fb16778368fdb8ff04eca578c53412b0e842e549c425490b13b5f
+      - seed.md sha256:fd3e7013ab267acfeb0c338c11767beb6b9471fb385cd60cad374635fe6d047e
+      - subsequent server previews planned two noop actions
+      - zero server apply receipts, tombstones, and open conflicts after initial pull
+      - operator reported successful synchronization in the active Windows Obsidian vault
+    notes: Confirmed initial pull and exact bytes pass. Explicit decline/no-mutation and restart persistence remain pending.
+knownLimitations: []
+failures:
+  - status: corrected
+    symptom: Non-JSON scope.yaml content was eagerly parsed as JSON and reported as an unreachable service.
+    mutationObserved: false
+    correctiveCommit: 16e9f43c980cf669ced4488e7ed26704b1d0b22f
+correctiveCommits:
+  - 16e9f43c980cf669ced4488e7ed26704b1d0b22f
