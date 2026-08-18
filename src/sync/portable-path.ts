@@ -53,3 +53,23 @@ export function assertPortablePath(path: string): void {
 		throw new Error('Portable path belongs to an excluded plugin directory.');
 	}
 }
+
+export function assertPortableVaultPaths(paths: Iterable<string>): void {
+	const seen = new Map<string, string>();
+	for (const path of paths) {
+		try {
+			assertPortablePath(path);
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : 'Portable path is invalid.';
+			throw new Error(`Vault path '${path}' is not portable: ${detail}`);
+		}
+		const key = portablePathKey(path);
+		const previous = seen.get(key);
+		if (previous !== undefined) {
+			throw new Error(
+				`Vault path '${path}' collides with '${previous}' under portable identity rules.`,
+			);
+		}
+		seen.set(key, path);
+	}
+}

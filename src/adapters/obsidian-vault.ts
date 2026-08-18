@@ -3,6 +3,7 @@ import type { LocalReplica } from '../sync/sync-cycle';
 import type { ReplicaEntry, SyncChecksum } from '../sync';
 import { assertSafeVaultFolder, isVaultConfigPath } from '../sync/foreground-trigger';
 import { contentTypeForPath } from '../sync/content-type';
+import { assertPortableVaultPaths } from '../sync/portable-path';
 
 const CONFLICT_ROOT = '_ABCM Conflicts';
 
@@ -47,11 +48,16 @@ export class ObsidianVaultReplica implements LocalReplica {
 	}
 
 	async inventory(): Promise<ReplicaEntry[]> {
-		const entries: ReplicaEntry[] = [];
-		for (const file of this.vault.getFiles()) {
-			if (isVaultConfigPath(file.path, this.vault.configDir)) continue;
+		const files = this.vault.getFiles().flatMap((file) => {
+			if (isVaultConfigPath(file.path, this.vault.configDir)) return [];
 			const path = this.relative(file);
-			if (path === null || path === CONFLICT_ROOT || path.startsWith(`${CONFLICT_ROOT}/`)) continue;
+			if (path === null || path === CONFLICT_ROOT || path.startsWith(`${CONFLICT_ROOT}/`)) return [];
+			return [{ file, path }];
+		});
+		assertPortableVaultPaths(files.map(({ path }) => path));
+
+		const entries: ReplicaEntry[] = [];
+		for (const { file, path } of files) {
 			const content = await this.vault.readBinary(file);
 			entries.push({
 				objectId: null,
