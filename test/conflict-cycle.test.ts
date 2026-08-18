@@ -140,6 +140,11 @@ describe('conflict-safe synchronization cycle', () => {
 				server: { state: 'present', checksum: digest('server-v2'), size: 9, contentType: 'text/markdown' },
 				baseChecksum: digest('base'), artifactPath: '_ABCM Conflicts/conflict_00000001/server-note.md',
 			}],
+			pendingMoves: [{
+				objectId: 'obj_note_00000001',
+				previousPath: 'note-base.md',
+				path: 'note.md',
+			}],
 		};
 		const client: SyncApi = {
 			preview: () => Promise.reject(new Error('Unexpected preview.')),
@@ -157,6 +162,7 @@ describe('conflict-safe synchronization cycle', () => {
 		expect(text(await replica.read('note.md'))).toBe('server-v2');
 		expect(text(await replica.read('note-local.md'))).toBe('local-v2');
 		expect(state.conflicts).toEqual([]);
+		expect(state.pendingMoves).toEqual([]);
 		expect(state.objects).toEqual(expect.arrayContaining([
 			{ objectId: 'obj_note_00000001', path: 'note.md', checksum: digest('server-v2') },
 			{ objectId: 'obj_copy_00000001', path: 'note-local.md', checksum: digest('local-v2') },

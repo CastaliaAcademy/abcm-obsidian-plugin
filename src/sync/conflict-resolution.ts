@@ -83,6 +83,7 @@ export async function resolvePersistedConflict(
 	}
 
 	state.conflicts = state.conflicts.filter((candidate) => candidate.conflictId !== conflictId);
+	state.pendingMoves = state.pendingMoves.filter((move) => move.objectId !== conflict.objectId);
 	state.objects = state.objects.filter((object) => object.objectId !== conflict.objectId);
 	if (resolution === 'keep-server' && conflict.server.state === 'present' && conflict.serverPath !== null) {
 		state.objects.push({ objectId: conflict.objectId, path: conflict.serverPath, checksum: conflict.server.checksum });
