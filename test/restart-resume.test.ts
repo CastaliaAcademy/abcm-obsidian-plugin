@@ -15,6 +15,8 @@ const checksum = (content: ArrayBuffer): Promise<SyncChecksum> =>
 	Promise.resolve(digest(new TextDecoder().decode(content)));
 
 class MemoryReplica implements LocalReplica {
+	readonly artifacts = new Map<string, ArrayBuffer>();
+
 	constructor(private readonly files: Map<string, ArrayBuffer>) {}
 
 	inventory(): Promise<ReplicaEntry[]> {
@@ -49,6 +51,12 @@ class MemoryReplica implements LocalReplica {
 		this.files.delete(previousPath);
 		this.files.set(path, content);
 		return Promise.resolve();
+	}
+
+	writeConflictArtifact(conflictId: string, sourcePath: string, content: ArrayBuffer): Promise<string> {
+		const path = `_ABCM Conflicts/${conflictId}/server-${sourcePath}`;
+		this.artifacts.set(path, content.slice(0));
+		return Promise.resolve(path);
 	}
 }
 
@@ -216,5 +224,103 @@ describe('expired cursor recovery', () => {
 			path: 'remote.md',
 			checksum: digest('c'),
 		});
+	});
+
+	it('resnapshots a pull-time concurrent update into an explicit conflict', async () => {
+		const state: PersistedSyncState = {
+			...createInitialSyncState(),
+			cursor: 'cursor_base',
+			objects: [{ objectId: 'obj_note000001', path: 'note.md', checksum: digest('a') }],
+		};
+		const replica = new MemoryReplica(new Map([['note.md', bytes('b')]]));
+		const persisted: PersistedSyncState[] = [];
+		const applied: ApplyOperation[] = [];
+		let changesCalls = 0;
+		const client: SyncApi = {
+			changes: (cursor) => {
+				changesCalls += 1;
+				if (changesCalls === 1) {
+					expect(cursor).toBe('cursor_base');
+					return Promise.resolve({
+						changes: [{
+							kind: 'update',
+							cursor: 'cursor_server_update',
+							objectId: 'obj_note000001',
+							operationId: 'op_server_update',
+							originDeviceId: null,
+							path: 'note.md',
+							occurredAt: '2026-08-18T00:00:00.000Z',
+							baseChecksum: digest('a'),
+							checksum: digest('c'),
+							size: 1,
+							contentType: 'text/markdown',
+							tombstone: false,
+						}],
+						nextCursor: 'cursor_server_update',
+						hasMore: false,
+					});
+				}
+				return Promise.resolve({ changes: [], nextCursor: cursor, hasMore: false });
+			},
+			preview: (cursor, inventory, _include, _exclude, base) => {
+				expect(cursor).toBeNull();
+				expect(base).toEqual(state.objects);
+				expect(inventory).toEqual([expect.objectContaining({ path: 'note.md', checksum: digest('b') })]);
+				return Promise.resolve({
+					previewId: 'preview_conflict',
+					serverRevision: 'revision-conflict',
+					cursor: 'cursor_server_update',
+					items: [{
+						action: 'conflict',
+						objectId: 'obj_note000001',
+						path: 'note.md',
+						localChecksum: digest('b'),
+						serverChecksum: digest('c'),
+						size: 1,
+					}],
+				});
+			},
+			apply: (_preview, operations) => {
+				applied.push(...operations);
+				return Promise.resolve({ receipts: [{
+					status: 'conflict',
+					operationId: operations[0]?.operationId ?? '',
+					cursor: 'cursor_conflict',
+					objectId: 'obj_note000001',
+					checksum: null,
+					conflictId: 'conflict_00000001',
+				}] });
+			},
+			getConflict: () => Promise.resolve({
+				conflictId: 'conflict_00000001',
+				objectId: 'obj_note000001',
+				kind: 'concurrent-update',
+				path: 'note.md',
+				localPath: 'note.md',
+				serverPath: 'note.md',
+				local: { state: 'present', checksum: digest('b'), size: 1, contentType: 'text/markdown' },
+				server: { state: 'present', checksum: digest('c'), size: 1, contentType: 'text/markdown' },
+				baseChecksum: digest('a'),
+				status: 'open',
+			}),
+			readContent: () => Promise.resolve(bytes('c')),
+		};
+
+		const result = await runSyncCycle(client, replica, {
+			state,
+			deviceId: 'device_00000001',
+			include: [],
+			exclude: [],
+			operationId: () => 'op_local_update',
+			checksum,
+			base64: () => 'Yg==',
+			persistState: (next) => { persisted.push(structuredClone(next)); },
+		});
+
+		expect(persisted.some((snapshot) => snapshot.cursor === null)).toBe(true);
+		expect(applied).toEqual([expect.objectContaining({ kind: 'update', baseChecksum: digest('a'), checksum: digest('b') })]);
+		expect(new TextDecoder().decode(await replica.read('note.md'))).toBe('b');
+		expect([...replica.artifacts.values()].map((content) => new TextDecoder().decode(content))).toEqual(['c']);
+		expect(result).toMatchObject({ cursor: 'cursor_conflict', outbox: [], conflicts: [{ conflictId: 'conflict_00000001' }] });
 	});
 });

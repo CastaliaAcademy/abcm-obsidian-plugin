@@ -114,6 +114,13 @@ class RemoteSnapshotChangedError extends Error {
 	}
 }
 
+class ConcurrentLocalChangeError extends Error {
+	constructor(path: string, kind: 'change' | 'deletion' = 'change') {
+		super(`Concurrent local ${kind} detected at '${path}'.`);
+		this.name = 'ConcurrentLocalChangeError';
+	}
+}
+
 async function verifiedRemoteContent(
 	client: SyncApi,
 	local: LocalReplica,
@@ -176,7 +183,7 @@ async function applyRemoteChange(
 			throw new Error(`Remote delete has no matching base at '${change.path}'.`);
 		}
 		if (localEntry !== undefined && localEntry.checksum !== base.checksum) {
-			throw new Error(`Concurrent local change detected at '${change.path}'.`);
+			throw new ConcurrentLocalChangeError(change.path);
 		}
 		if (localEntry !== undefined) await local.delete(localEntry.path);
 		removeInventoryPath(inventory, sourcePath);
@@ -190,7 +197,7 @@ async function applyRemoteChange(
 		}
 		const target = localEntryByPath(inventory, change.path);
 		if (localEntry === undefined || localEntry.checksum !== base.checksum || target !== undefined) {
-			throw new Error(`Concurrent local change detected at '${change.previousPath}'.`);
+			throw new ConcurrentLocalChangeError(change.previousPath);
 		}
 		await local.move(change.previousPath, change.path);
 		removeInventoryPath(inventory, change.previousPath);
@@ -209,10 +216,10 @@ async function applyRemoteChange(
 			portablePathKey(base.path) !== portablePathKey(change.path) ||
 			localEntry.checksum !== base.checksum)
 	) {
-		throw new Error(`Concurrent local change detected at '${change.path}'.`);
+		throw new ConcurrentLocalChangeError(change.path);
 	}
 	if (localEntry === undefined && base !== undefined) {
-		throw new Error(`Concurrent local deletion detected at '${change.path}'.`);
+		throw new ConcurrentLocalChangeError(change.path, 'deletion');
 	}
 
 	if (localEntry?.checksum !== change.checksum) {
@@ -244,7 +251,9 @@ function isExpiredCursor(error: unknown): boolean {
 }
 
 function isRecoverableHistoryError(error: unknown): boolean {
-	return isExpiredCursor(error) || error instanceof RemoteSnapshotChangedError;
+	return isExpiredCursor(error) ||
+		error instanceof RemoteSnapshotChangedError ||
+		error instanceof ConcurrentLocalChangeError;
 }
 
 async function recoverExpiredCursor(
