@@ -203,6 +203,17 @@ scenarioResults:
       - final cursor cur_1_4_38905417cd61c47e2d971916 preview contained only the two baseline noop items
       - zero open conflicts after convergence
     notes: Server-to-local text lifecycle passed through the active foreground plugin without manual file copying.
+  P04:
+    status: pass
+    datasetDigest: sha256:274983475693e250e3fbdd5491913c2f7ad649e5bf23db519e37b33b0cf84850
+    evidence:
+      - vault create contained zero and non-UTF-8 bytes; event sequence 9 stored exact 64-byte sha256:1bfcaa5f31e7e59fee98e41e666bcd6f52d0e8daa252eb1565ad61c461451990
+      - REST read returned the same bytes, size, ETag, and application/octet-stream
+      - checksum-guarded upload plus atomic REST batch replaced the object with exact 79-byte sha256:83ff70dc11ecc7c1f99d8bd5c82b5fcc143a344b3227a82cd4ca1ee69029f976
+      - server replacement produced event sequence 10 with application/octet-stream and preserved obj_3ce04282d2fb1aed1d35f8e3418556e2
+      - foreground synchronization wrote bytes identical to the REST upload into the vault
+      - object version advanced from 1 to 2 and the journal contains exactly the create and external update, with one receipt each and no echo event
+    notes: Binary round trip passed in both directions without UTF-8 decoding, newline normalization, or content-type drift.
 knownLimitations: []
 failures:
   - status: corrected
@@ -218,5 +229,5 @@ correctiveCommits:
   - 16e9f43c980cf669ced4488e7ed26704b1d0b22f
   - c02ea12ba9c7ea599396a87a13e3a87b8757cf2f
 finalDecision: pending
-reviewedAtUtc: 2026-08-18T07:46:30Z
+reviewedAtUtc: 2026-08-18T08:21:40Z
 ```
