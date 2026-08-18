@@ -110,10 +110,10 @@ Expected: no silent loss, no timestamp winner, and every unaffected object conve
 
 ## Linux Ubuntu LTS
 
-- [ ] Install AppImage and pair
-- [ ] Same lifecycle scenarios as Windows
-- [ ] Case-sensitive and Unicode portable-path rejection
-- [ ] Conflict and revoke/re-pair
+- [x] Install AppImage and pair
+- [x] Same lifecycle scenarios as Windows
+- [x] Case-sensitive and Unicode portable-path rejection
+- [x] Conflict and revoke/re-pair
 
 ## Physical iPadOS device
 
@@ -295,4 +295,103 @@ correctiveCommits:
   - 67c98a7c866a4a68e9b490a7eeedf832b41a923c
 finalDecision: pending
 reviewedAtUtc: 2026-08-18T13:32:48Z
+```
+
+```yaml
+runId: PA-20260818-linux-01
+dateUtc: 2026-08-18T15:36:02Z
+platform: linux-ubuntu-lts
+osVersion: "Ubuntu 22.04.3 LTS under WSL2/WSLg"
+deviceModel: "DESKTOP-JBDGE1E (x86_64)"
+obsidianVersion: 1.13.7
+obsidianInstallerVersion: 1.13.4
+pluginCommit: 71a6cfae7060daa144300a149d73c9d098705f77
+pluginVersion: 0.1.0
+releaseAssetSha256:
+  main.js: 464961ed577097bd081b9040b3f6fdcca6022a74c890eb5e2337d94bb993222b
+  manifest.json: d8e6a989bf720c6104e41d076dc4255c3d7557cdadebb1aabcc811469e128d7e
+  styles.css: 8764243cae0351ebdbb76e770c4feffcb1956ff42420d4ec159212dc7a8535ed
+abcmCommit: 67c98a7c866a4a68e9b490a7eeedf832b41a923c
+abcmVersion: 0.1.0
+endpointType: http-loopback
+workspaceId: abcm-acceptance-linux
+projectId: fixture
+vaultFolder: ABCM Linux
+datasetDigest: sha256:de77c815111cde14710eaca5da84ce99b03d44c83239906459b36b560552eef6
+reviewer: Codex (physical WSLg UI, checksums, and server journal)
+scenarioResults:
+  P01:
+    status: pass
+    evidence:
+      - the real settings UI redeemed a fresh project-scoped pairing code and Preview initial sync displayed create-local: 1
+      - Cancel left cursor null, zero objects/outbox/conflicts/pendingMoves, no mapped folder, and the server seed unchanged
+      - confirmation created the exact 51-byte p01-seed.md sha256:b2cea076d793b12150474c22064caa62615360b4c863c69c2a308e18aef5cef0
+      - cursor/base state and exact bytes survived a full Obsidian process restart
+    notes: Installation, pairing, no-mutation decline, confirmed pull, and restart persistence passed through the WSLg UI.
+  P02:
+    status: pass
+    evidence:
+      - local create, update, identity-preserving rename, and delete used obj_f8944e03a1823d7892a00eca6f9331d7
+      - create checksum prefix 7d91a0 and update/rename checksum prefix bc07f620 matched exactly in the vault, REST response, and journal
+      - cursors advanced once per action through sequences 1-4; the deleted path returned HTTP 404 and all queues were empty
+    notes: Local-to-server lifecycle passed without duplicate or identity drift.
+  P03:
+    status: pass
+    evidence:
+      - REST create, update, move, and delete retained obj_551008c1337845a7829391c514597a4a
+      - create checksum prefix 2beb53 and update checksum prefix 0984fd matched exact local bytes
+      - cursors advanced once through sequences 5-8, both deleted paths returned HTTP 404, and all queues were empty
+    notes: Server-to-local lifecycle passed through the Vault API.
+  P04:
+    status: pass
+    evidence:
+      - local binary upload preserved 64 bytes, application/octet-stream, and checksum prefix f5c93e
+      - REST replacement preserved 79 bytes and sha256:76563cd804b00d65ae90be9bc28e2e1641cf32701c67b55932157868a07242bf
+      - object id prefix obj_50437 remained stable and byte-for-byte comparison returned equal
+    notes: Binary round trip passed without text conversion.
+  P05:
+    status: pass
+    evidence:
+      - with only abcm-local stopped, a local update and rename persisted status offline plus one pending move
+      - the outbox, cursor, and pending move survived Obsidian termination and restart while still offline
+      - after Docker recovery, p05-offline-renamed.md converged at sha256:2a916170870fc53c215ff5883398a8387ae40a69ecbb85869a800f1a4f954b4c and unrelated p05-remote.md at sha256:e4a25f44b48aa874adec7e0676da0c428ba49713ea378172cd15c99abea989d8
+      - the original path returned HTTP 404 and all durable queues were empty
+    notes: WSLg does not expose a Linux system-suspend primitive; network loss plus process termination/restart exercised the permitted persistence boundary.
+  P06:
+    status: pass
+    evidence:
+      - update/update conflict_2b04 preserved both versions; Keep local converged to sha256:d2d574316f21bd1d89c0aaae99a3bda93f6ba0e21fa3cdf28604318e04823074
+      - delete/update conflict_54e5 used Keep server and restored sha256:927ceda32d37f69608841c9629a60cacb85a0db105ca7f0030267fc489f7657e
+      - move/move conflict_d432 used Keep both, retained object id prefix obj_0c239d at p06-move-server.md, and created object id prefix obj_7311 at Recovered p06-move-local.md
+      - both recovered move versions were sha256:0986c241402878b81098ec09c690c37590d14cb4220794cc9e143a2378834cb0; _ABCM Conflicts stayed local-only
+    notes: All conflict classes and all three real modal resolutions passed with empty final queues.
+  P07:
+    status: pass
+    evidence:
+      - revoking device_b2ac6be00c4a81af49d6309691fda5f6 produced auth-required with paused synchronization and no cursor advancement
+      - local sha256:e372297348d567cb844807a75b8b13785ab11de4349989e179559d623b3e4181 and remote sha256:6df465ea6057712549eac48aa96952b2b78dc036e011dcd7bc1714f159713776 remained isolated while revoked
+      - Re-pair device redeemed a fresh scoped code into the same stable device id and converged both files without exposing either credential
+    notes: Revocation was fail-closed and re-pair resumed the retained state.
+  P08:
+    status: pass
+    evidence:
+      - ordinary NFC p08-café.md synchronized at sha256:a1fcde7ebb5f645d4ca2f671561b077687038e709eb4dce24940553238aec485
+      - P08-CASE.md versus p08-case.md was rejected locally with both path names; CON.md was rejected as a Windows reserved name
+      - the Vault API rejected an NFD duplicate; an externally injected NFD alias caused an explicit recoverable delete/update conflict rather than silent loss
+      - traversal, .obsidian configDir, and _ABCM Conflicts inputs changed neither cursor nor server object count
+      - the server retained only fixture/p08-café.md and fixture/p08-case.md from the P08 set
+    notes: The first case-fold attempt exposed a generic HTTP 400; 71a6cfa now rejects the entire non-portable inventory locally before any remote request.
+knownLimitations:
+  - WSLg acceptance does not substitute for the required physical iPadOS and cross-device P09 runs.
+  - The minimal Ubuntu/WSLg profile had no native secret store, so Obsidian warned that the device credential used its documented unencrypted fallback.
+failures:
+  - status: corrected
+    symptom: A case-fold collision on a case-sensitive filesystem reached ABCM and surfaced only as generic HTTP 400.
+    mutationObserved: false
+    correctiveCommit: 71a6cfae7060daa144300a149d73c9d098705f77
+    verification: The installed corrective release named both colliding vault paths before a remote request; 62 automated tests and release validation passed.
+correctiveCommits:
+  - 71a6cfae7060daa144300a149d73c9d098705f77
+finalDecision: pass
+reviewedAtUtc: 2026-08-18T15:36:02Z
 ```
