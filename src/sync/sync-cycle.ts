@@ -107,6 +107,13 @@ function rememberOperations(
 	);
 }
 
+class RemoteSnapshotChangedError extends Error {
+	constructor(path: string) {
+		super(`Remote file changed after synchronization snapshot at '${path}'.`);
+		this.name = 'RemoteSnapshotChangedError';
+	}
+}
+
 async function verifiedRemoteContent(
 	client: SyncApi,
 	local: LocalReplica,
@@ -116,7 +123,7 @@ async function verifiedRemoteContent(
 ): Promise<void> {
 	const content = await client.readContent(path);
 	if ((await options.checksum(content)) !== expectedChecksum) {
-		throw new Error(`Remote file changed after synchronization snapshot at '${path}'.`);
+		throw new RemoteSnapshotChangedError(path);
 	}
 	await local.write(path, content);
 	if ((await options.checksum(await local.read(path))) !== expectedChecksum) {
@@ -234,6 +241,10 @@ async function applyRemoteChange(
 
 function isExpiredCursor(error: unknown): boolean {
 	return error instanceof AbcmSyncHttpError && error.code === 'SYNC_CURSOR_EXPIRED';
+}
+
+function isRecoverableHistoryError(error: unknown): boolean {
+	return isExpiredCursor(error) || error instanceof RemoteSnapshotChangedError;
 }
 
 async function recoverExpiredCursor(
@@ -565,39 +576,49 @@ export async function runSyncCycle(
 	let recoveredOutbox: PersistedOutboxEntry[] | null = state.cursor === null && state.outbox.length > 0
 		? state.outbox.map((entry) => ({ ...entry }))
 		: null;
-	try {
-		await pullOrderedChanges(client, local, state, options);
-	} catch (error) {
-		if (!isExpiredCursor(error)) throw error;
-		recoveredOutbox = state.outbox.map((entry) => ({ ...entry }));
-		await recoverExpiredCursor(state, options);
-	}
-	if (recoveredOutbox === null) await flushOutbox(client, local, state, options);
+	let recoveryCount = 0;
+	for (;;) {
+		try {
+			await pullOrderedChanges(client, local, state, options);
+		} catch (error) {
+			if (!isRecoverableHistoryError(error) || recoveryCount >= 1) throw error;
+			recoveredOutbox = state.outbox.map((entry) => ({ ...entry }));
+			await recoverExpiredCursor(state, options);
+			recoveryCount += 1;
+		}
+		if (recoveredOutbox === null) await flushOutbox(client, local, state, options);
 
-	const inventory = await local.inventory();
-	if (inventory.length > MAX_INVENTORY_ENTRIES) {
-		throw new Error(`Vault inventory exceeds the supported ${MAX_INVENTORY_ENTRIES}-file limit.`);
-	}
-	const preview = await client.preview(
-		state.cursor,
-		inventory,
-		options.include,
-		options.exclude,
-		state.objects,
-		state.pendingMoves,
-	);
-	if (state.cursor === null && state.objects.length === 0) {
-		const confirmed = await options.confirmInitialPreview?.(preview) ?? false;
-		if (!confirmed) throw new Error('Initial synchronization was not confirmed.');
-	}
+		const inventory = await local.inventory();
+		if (inventory.length > MAX_INVENTORY_ENTRIES) {
+			throw new Error(`Vault inventory exceeds the supported ${MAX_INVENTORY_ENTRIES}-file limit.`);
+		}
+		const preview = await client.preview(
+			state.cursor,
+			inventory,
+			options.include,
+			options.exclude,
+			state.objects,
+			state.pendingMoves,
+		);
+		if (state.cursor === null && state.objects.length === 0) {
+			const confirmed = await options.confirmInitialPreview?.(preview) ?? false;
+			if (!confirmed) throw new Error('Initial synchronization was not confirmed.');
+		}
 
-	if (recoveredOutbox !== null) await queuePreviewPushes(local, preview, inventory, state, options, recoveredOutbox);
-	await applyPreviewPulls(client, local, preview, inventory, state, options);
-	state.cursor = preview.cursor;
-	await persist(options, state);
-	if (recoveredOutbox === null) await queuePreviewPushes(local, preview, inventory, state, options);
-	await flushOutbox(client, local, state, options);
-	await pullOrderedChanges(client, local, state, options);
-
-	return state;
+		if (recoveredOutbox !== null) await queuePreviewPushes(local, preview, inventory, state, options, recoveredOutbox);
+		await applyPreviewPulls(client, local, preview, inventory, state, options);
+		state.cursor = preview.cursor;
+		await persist(options, state);
+		if (recoveredOutbox === null) await queuePreviewPushes(local, preview, inventory, state, options);
+		await flushOutbox(client, local, state, options);
+		try {
+			await pullOrderedChanges(client, local, state, options);
+			return state;
+		} catch (error) {
+			if (!isRecoverableHistoryError(error) || recoveryCount >= 1) throw error;
+			recoveredOutbox = state.outbox.map((entry) => ({ ...entry }));
+			await recoverExpiredCursor(state, options);
+			recoveryCount += 1;
+		}
+	}
 }

@@ -136,4 +136,85 @@ describe('expired cursor recovery', () => {
 		expect(confirmCalls).toBe(0);
 		expect(result).toMatchObject({ cursor: 'cursor_applied', outbox: [] });
 	});
+
+	it('recovers from a stale ordered event without weakening content verification', async () => {
+		const state: PersistedSyncState = {
+			...createInitialSyncState(),
+			cursor: 'cursor_before_remote',
+			objects: [{ objectId: 'obj_base000001', path: 'base.md', checksum: digest('a') }],
+		};
+		const replica = new MemoryReplica(new Map([['base.md', bytes('a')]]));
+		const persisted: PersistedSyncState[] = [];
+		let changesCalls = 0;
+		let previewCalls = 0;
+		const client: SyncApi = {
+			changes: (cursor) => {
+				changesCalls += 1;
+				if (changesCalls === 1) {
+					expect(cursor).toBe('cursor_before_remote');
+					return Promise.resolve({
+						changes: [{
+							kind: 'create',
+							cursor: 'cursor_remote_create',
+							objectId: 'obj_remote00001',
+							operationId: 'op_remote000001',
+							originDeviceId: null,
+							path: 'remote.md',
+							occurredAt: '2026-08-18T00:00:00.000Z',
+							checksum: digest('b'),
+							size: 1,
+							contentType: 'text/markdown',
+							tombstone: false,
+						}],
+						nextCursor: 'cursor_remote_create',
+						hasMore: false,
+					});
+				}
+				return Promise.resolve({ changes: [], nextCursor: cursor, hasMore: false });
+			},
+			preview: (cursor, inventory, _include, _exclude, base) => {
+				previewCalls += 1;
+				expect(cursor).toBeNull();
+				expect(base).toEqual(state.objects);
+				expect(inventory).toHaveLength(1);
+				return Promise.resolve({
+					previewId: 'preview_current',
+					serverRevision: 'revision-current',
+					cursor: 'cursor_remote_update',
+					items: [{
+						action: 'create-local',
+						objectId: 'obj_remote00001',
+						path: 'remote.md',
+						localChecksum: null,
+						serverChecksum: digest('c'),
+						size: 1,
+					}],
+				});
+			},
+			readContent: () => Promise.resolve(bytes('c')),
+			apply: () => Promise.reject(new Error('Unexpected apply.')),
+		};
+
+		const result = await runSyncCycle(client, replica, {
+			state,
+			deviceId: 'device_00000001',
+			include: [],
+			exclude: [],
+			operationId: () => 'op_unexpected01',
+			checksum,
+			base64: () => { throw new Error('Unexpected base64 encoding.'); },
+			confirmInitialPreview: () => Promise.reject(new Error('Unexpected confirmation.')),
+			persistState: (next) => { persisted.push(structuredClone(next)); },
+		});
+
+		expect(previewCalls).toBe(1);
+		expect(persisted.some((snapshot) => snapshot.cursor === null)).toBe(true);
+		expect(new TextDecoder().decode(await replica.read('remote.md'))).toBe('c');
+		expect(result.cursor).toBe('cursor_remote_update');
+		expect(result.objects.find((object) => object.objectId === 'obj_remote00001')).toEqual({
+			objectId: 'obj_remote00001',
+			path: 'remote.md',
+			checksum: digest('c'),
+		});
+	});
 });
