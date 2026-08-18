@@ -45,10 +45,11 @@ export interface SyncCycleOptions {
 
 function cloneState(state: PersistedSyncState): PersistedSyncState {
 	return {
-		schemaVersion: 4,
+		schemaVersion: 5,
 		cursor: state.cursor,
 		objects: state.objects.map((object) => ({ ...object })),
 		outbox: state.outbox.map((entry) => ({ ...entry })),
+		pendingMoves: state.pendingMoves.map((move) => ({ ...move })),
 		conflicts: state.conflicts.map((conflict) => ({ ...conflict, local: { ...conflict.local }, server: { ...conflict.server } })),
 		recentOperationIds: [...state.recentOperationIds],
 	};
@@ -401,6 +402,9 @@ async function flushOutbox(
 			const checksum = receipt.checksum ?? entry.checksum;
 			if (checksum === null) throw new Error("ABCM returned no checksum for '" + entry.path + "'.");
 			setObject(state, { objectId: receipt.objectId, path: entry.path, checksum });
+			if (entry.kind === 'move') {
+				state.pendingMoves = state.pendingMoves.filter((move) => move.objectId !== receipt.objectId);
+			}
 		}
 	}
 	rememberOperations(state, acknowledgedOperationIds);
@@ -425,6 +429,7 @@ async function applyPreviewPulls(
 				path: item.path,
 				checksum: item.serverChecksum,
 			});
+			state.pendingMoves = state.pendingMoves.filter((move) => move.objectId !== item.objectId || portablePathKey(move.path) !== portablePathKey(item.path));
 		}
 		if (item.action === 'delete-local') {
 			if (item.objectId === null) throw new Error(`Remote delete identity is incomplete at '${item.path}'.`);
@@ -522,7 +527,7 @@ async function queuePreviewPushes(
 		if (item.action === 'move-server' || (item.action === 'conflict' && state.objects.find((object) => object.objectId === item.objectId)?.path !== item.path)) {
 			const base = state.objects.find((object) => object.objectId === item.objectId);
 			if (base === undefined || entry.checksum === null) throw new Error(`Pinned move differs from local state at '${item.path}'.`);
-			if (item.action === 'move-server' && (item.previousPath === undefined || item.serverChecksum === null || base.checksum !== item.serverChecksum || entry.checksum !== base.checksum)) throw new Error(`Pinned move differs from local state at '${item.path}'.`);
+			if (item.action === 'move-server' && (item.previousPath === undefined || item.serverChecksum === null || base.checksum !== item.serverChecksum)) throw new Error(`Pinned move differs from local state at '${item.path}'.`);
 			entries.push({ operationId: options.operationId(), objectId: item.objectId, path: item.path, kind: 'move', checksum: entry.checksum, baseChecksum: item.action === 'conflict' ? base.checksum : item.serverChecksum, size: entry.size, contentType: entry.contentType ?? 'application/octet-stream', previousPath: item.action === 'conflict' ? base.path : item.previousPath, previewId: preview.previewId, serverRevision: preview.serverRevision, previewCursor: preview.cursor });
 			continue;
 		}
@@ -579,6 +584,7 @@ export async function runSyncCycle(
 		options.include,
 		options.exclude,
 		state.objects,
+		state.pendingMoves,
 	);
 	if (state.cursor === null && state.objects.length === 0) {
 		const confirmed = await options.confirmInitialPreview?.(preview) ?? false;

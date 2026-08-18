@@ -26,6 +26,8 @@ import {
 	ForegroundSyncTrigger,
 	isSynchronizedVaultPath,
 	hydrateSyncState,
+	recordPendingMove,
+	relativeSynchronizedVaultPath,
 	resolvePersistedConflict,
 	retryDelayMs,
 	runSyncCycle,
@@ -263,9 +265,17 @@ export default class AbcmSyncPlugin extends Plugin {
 		this.registerEvent(this.app.vault.on('modify', changed));
 		this.registerEvent(this.app.vault.on('delete', changed));
 		this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+			if (!(file instanceof TFile)) return;
+			const previousPath = relativeSynchronizedVaultPath(oldPath, this.settings.vaultFolder, this.app.vault.configDir);
+			const path = relativeSynchronizedVaultPath(file.path, this.settings.vaultFolder, this.app.vault.configDir);
+			if (!this.syncInProgress && previousPath !== null && path !== null) {
+				const state = this.loadSyncState();
+				const next = recordPendingMove(state, previousPath, path);
+				if (next !== state) this.app.saveLocalStorage(LOCAL_STATE_KEY, next);
+			}
 			if (
-				file instanceof TFile &&
-				(isSynchronizedVaultPath(file.path, this.settings.vaultFolder, this.app.vault.configDir) || isSynchronizedVaultPath(oldPath, this.settings.vaultFolder, this.app.vault.configDir))
+				isSynchronizedVaultPath(file.path, this.settings.vaultFolder, this.app.vault.configDir) ||
+				isSynchronizedVaultPath(oldPath, this.settings.vaultFolder, this.app.vault.configDir)
 			) this.trigger.change();
 		}));
 		this.registerInterval(window.setInterval(() => { this.trigger.resume(); }, this.settings.intervalSeconds * 1_000));

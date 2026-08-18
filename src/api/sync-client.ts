@@ -1,5 +1,5 @@
 import type { HttpTransport } from './http';
-import type { BaseEntry, ConflictSide, ReplicaEntry, SyncChecksum } from '../sync';
+import type { BaseEntry, ConflictSide, PersistedPendingMove, ReplicaEntry, SyncChecksum } from '../sync';
 
 export type PreviewAction =
 	| 'create-local'
@@ -167,6 +167,7 @@ export interface SyncApi {
 		include: string[],
 		exclude: string[],
 		base?: BaseEntry[],
+		identityHints?: PersistedPendingMove[],
 	): Promise<PreviewResult>;
 	changes(cursor: string, limit: number): Promise<ChangesResult>;
 	readContent(path: string): Promise<ArrayBuffer>;
@@ -201,6 +202,7 @@ export class AbcmSyncClient implements SyncApi {
 		include: string[],
 		exclude: string[],
 		base?: BaseEntry[],
+		identityHints?: PersistedPendingMove[],
 	): Promise<PreviewResult> {
 		const response = await this.transport.request({
 			url: `${this.base()}/preview`,
@@ -217,6 +219,7 @@ export class AbcmSyncClient implements SyncApi {
 				include,
 				exclude,
 				...(base === undefined ? {} : { base }),
+				...(identityHints === undefined || identityHints.length === 0 ? {} : { identityHints }),
 			}),
 		});
 		assertStatus(response.status, 200, response.json, 'preview');

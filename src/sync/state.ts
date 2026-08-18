@@ -4,6 +4,7 @@ import type {
 	PersistedConflictState,
 	PersistedObjectState,
 	PersistedOutboxEntry,
+	PersistedPendingMove,
 	PersistedSyncState,
 } from './types';
 
@@ -28,6 +29,22 @@ function parseObject(value: unknown): PersistedObjectState {
 		objectId: value.objectId,
 		path: value.path,
 		checksum: value.checksum,
+	};
+}
+
+function parsePendingMove(value: unknown): PersistedPendingMove {
+	if (!isRecord(value) || typeof value.objectId !== 'string' || typeof value.previousPath !== 'string' || typeof value.path !== 'string') {
+		throw new Error('Persisted pending move is invalid.');
+	}
+	assertPortablePath(value.previousPath);
+	assertPortablePath(value.path);
+	if (portablePathKey(value.previousPath) === portablePathKey(value.path)) {
+		throw new Error('Persisted pending move has identical paths.');
+	}
+	return {
+		objectId: value.objectId,
+		previousPath: value.previousPath,
+		path: value.path,
 	};
 }
 
@@ -163,17 +180,18 @@ function assertUniqueObjects(objects: PersistedObjectState[]): void {
 
 export function createInitialSyncState(): PersistedSyncState {
 	return {
-		schemaVersion: 4,
+		schemaVersion: 5,
 		cursor: null,
 		objects: [],
 		outbox: [],
+		pendingMoves: [],
 		conflicts: [],
 		recentOperationIds: [],
 	};
 }
 
 export function hydrateSyncState(value: unknown): PersistedSyncState {
-	if (!isRecord(value) || ![1, 2, 3, 4].includes(value.schemaVersion as number)) {
+	if (!isRecord(value) || ![1, 2, 3, 4, 5].includes(value.schemaVersion as number)) {
 		throw new Error('Unsupported persisted sync state.');
 	}
 	if (!(typeof value.cursor === 'string' || value.cursor === null)) {
@@ -204,7 +222,7 @@ export function hydrateSyncState(value: unknown): PersistedSyncState {
 	if (new Set(recentOperationIds).size !== recentOperationIds.length) {
 		throw new Error('Persisted recent operation identities contain duplicates.');
 	}
-	const conflicts = value.schemaVersion === 4
+	const conflicts = value.schemaVersion === 4 || value.schemaVersion === 5
 		? (() => {
 			if (!Array.isArray(value.conflicts)) throw new Error('Persisted conflicts are invalid.');
 			const parsed = value.conflicts.map(parseConflict);
@@ -214,14 +232,61 @@ export function hydrateSyncState(value: unknown): PersistedSyncState {
 			return parsed;
 		})()
 		: [];
+	const pendingMoves = value.schemaVersion === 5
+		? (() => {
+			if (!Array.isArray(value.pendingMoves)) throw new Error('Persisted pending moves are invalid.');
+			const parsed = value.pendingMoves.map(parsePendingMove);
+			const objectIds = new Set<string>();
+			const targets = new Set<string>();
+			for (const move of parsed) {
+				const object = objects.find((candidate) => candidate.objectId === move.objectId);
+				if (object === undefined || portablePathKey(object.path) !== portablePathKey(move.previousPath)) {
+					throw new Error('Persisted pending move does not match object state.');
+				}
+				const targetKey = portablePathKey(move.path);
+				if (objectIds.has(move.objectId) || targets.has(targetKey)) {
+					throw new Error('Persisted pending moves contain duplicate identities.');
+				}
+				objectIds.add(move.objectId);
+				targets.add(targetKey);
+			}
+			return parsed;
+		})()
+		: [];
 	return {
-		schemaVersion: 4,
+		schemaVersion: 5,
 		cursor: value.cursor,
 		objects,
 		outbox: value.outbox.map(parseOutbox),
+		pendingMoves,
 		conflicts,
 		recentOperationIds,
 	};
+}
+
+export function recordPendingMove(state: PersistedSyncState, previousPath: string, path: string): PersistedSyncState {
+	assertPortablePath(previousPath);
+	assertPortablePath(path);
+	const previousKey = portablePathKey(previousPath);
+	const pathKey = portablePathKey(path);
+	if (previousKey === pathKey) return state;
+	const chained = state.pendingMoves.find((move) => portablePathKey(move.path) === previousKey);
+	if (chained !== undefined) {
+		const pendingMoves = portablePathKey(chained.previousPath) === pathKey
+			? state.pendingMoves.filter((move) => move.objectId !== chained.objectId)
+			: state.pendingMoves.map((move) => move.objectId === chained.objectId ? { ...move, path } : move);
+		return hydrateSyncState({ ...state, pendingMoves });
+	}
+	const object = state.objects.find((candidate) => portablePathKey(candidate.path) === previousKey);
+	if (object === undefined) return state;
+	return hydrateSyncState({
+		...state,
+		pendingMoves: [...state.pendingMoves.filter((move) => move.objectId !== object.objectId), {
+			objectId: object.objectId,
+			previousPath: object.path,
+			path,
+		}],
+	});
 }
 
 export function serializeSyncState(state: PersistedSyncState): string {

@@ -57,6 +57,12 @@ export interface PersistedObjectState {
 	checksum: SyncChecksum;
 }
 
+export interface PersistedPendingMove {
+	objectId: string;
+	previousPath: string;
+	path: string;
+}
+
 export type ConflictSide =
 	| {
 			state: 'present';
@@ -98,10 +104,11 @@ export interface PersistedOutboxEntry {
 }
 
 export interface PersistedSyncState {
-	schemaVersion: 4;
+	schemaVersion: 5;
 	cursor: string | null;
 	objects: PersistedObjectState[];
 	outbox: PersistedOutboxEntry[];
+	pendingMoves: PersistedPendingMove[];
 	conflicts: PersistedConflictState[];
 	recentOperationIds: string[];
 }

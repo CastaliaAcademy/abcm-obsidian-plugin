@@ -47,15 +47,19 @@ export function assertSafeVaultFolder(vaultFolder: string, configDir: string): v
 	}
 }
 
-export function isSynchronizedVaultPath(path: string, vaultFolder: string, configDir: string): boolean {
+export function relativeSynchronizedVaultPath(path: string, vaultFolder: string, configDir: string): string | null {
 	const relative = vaultFolder === ''
 		? path
 		: path.startsWith(`${vaultFolder}/`)
 			? path.slice(vaultFolder.length + 1)
 			: '';
-	if (relative === '') return false;
-	return !(
+	if (relative === '' ||
 		isVaultConfigPath(relative, configDir) ||
 		relative === CONFLICT_ROOT || relative.startsWith(`${CONFLICT_ROOT}/`)
-	);
+	) return null;
+	return relative;
+}
+
+export function isSynchronizedVaultPath(path: string, vaultFolder: string, configDir: string): boolean {
+	return relativeSynchronizedVaultPath(path, vaultFolder, configDir) !== null;
 }
