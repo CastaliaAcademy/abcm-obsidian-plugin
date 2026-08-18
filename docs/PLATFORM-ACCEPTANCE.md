@@ -102,7 +102,7 @@ Expected: no silent loss, no timestamp winner, and every unaffected object conve
 ## Windows 11
 
 - [x] Install and pair
-- [ ] Initial preview has no pre-confirmation mutation
+- [x] Initial preview has no pre-confirmation mutation
 - [x] Create/update/delete/rename both directions
 - [x] Network loss, sleep, restart, and recovery
 - [x] Conflict and revoke/re-pair
@@ -169,7 +169,7 @@ datasetDigest: sha256:9b5e39f324e6fc2887ef9ac22d16af95db8043bdca565560a3bf24d662
 reviewer: egor (operator) + Codex (checksums and server journal)
 scenarioResults:
   P01:
-    status: partial
+    status: pass
     evidence:
       - pairing redeemed into the server-owned abcm-acceptance-windows/fixture scope
       - first successful preview planned two create-local actions
@@ -179,7 +179,11 @@ scenarioResults:
       - zero server apply receipts, tombstones, and open conflicts after initial pull
       - operator reported successful synchronization in the active Windows Obsidian vault
       - after a full Obsidian restart, scope.yaml and seed.md retained the same checksums and the persisted cursor/object state resumed
-    notes: Confirmed initial pull, exact bytes, and restart persistence pass. Explicit decline/no-mutation remains pending.
+      - an isolated rerun displayed a real modal with create-local: 1 and the Cancel/Synchronize choices
+      - Cancel left local cursor null with zero objects, outbox, conflicts, pendingMoves, and no mapped vault folder
+      - server p01-seed.md remained sha256:3d374a9cc17bdc415c3eb6cb5f5b0efcb11cefe9427d6ae7b3118fbf58f4492b; journal contained zero events, receipts, and tombstones
+      - one deterministic sync_objects identity snapshot is derived preview metadata, not a workspace byte or ordered change-event mutation
+    notes: Explicit decline/no-mutation, confirmed initial pull, exact bytes, and restart persistence all pass under the normative workspace/journal-event mutation boundary.
   P02:
     status: pass
     evidence:
@@ -258,7 +262,6 @@ scenarioResults:
 knownLimitations:
   - This Windows run does not substitute for the still-required physical Linux Ubuntu LTS and iPadOS runs.
   - Cross-device Windows/iPad and Linux/iPad P09 evidence remains pending.
-  - P01 explicit decline/no-mutation remains pending even though confirmed preview, restart persistence, and later lifecycle checks pass.
 failures:
   - status: corrected
     symptom: Non-JSON scope.yaml content was eagerly parsed as JSON and reported as an unreachable service.
@@ -291,5 +294,5 @@ correctiveCommits:
   - 9ced6213174e7928e73cadeeb6bac9cf36a649fb
   - 67c98a7c866a4a68e9b490a7eeedf832b41a923c
 finalDecision: pending
-reviewedAtUtc: 2026-08-18T13:02:34Z
+reviewedAtUtc: 2026-08-18T13:32:48Z
 ```
