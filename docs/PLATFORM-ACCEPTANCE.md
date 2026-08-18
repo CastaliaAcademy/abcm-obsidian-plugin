@@ -103,7 +103,7 @@ Expected: no silent loss, no timestamp winner, and every unaffected object conve
 
 - [x] Install and pair
 - [ ] Initial preview has no pre-confirmation mutation
-- [ ] Create/update/delete/rename both directions
+- [x] Create/update/delete/rename both directions
 - [ ] Network loss, sleep, restart, and recovery
 - [ ] Conflict and revoke/re-pair
 
@@ -177,7 +177,21 @@ scenarioResults:
       - subsequent server previews planned two noop actions
       - zero server apply receipts, tombstones, and open conflicts after initial pull
       - operator reported successful synchronization in the active Windows Obsidian vault
-    notes: Confirmed initial pull and exact bytes pass. Explicit decline/no-mutation and restart persistence remain pending.
+      - after a full Obsidian restart, scope.yaml and seed.md retained the same checksums and the persisted cursor/object state resumed
+    notes: Confirmed initial pull, exact bytes, and restart persistence pass. Explicit decline/no-mutation remains pending.
+  P02:
+    status: pass
+    evidence:
+      - local create produced event sequence 5 and exact 65-byte sha256:b3283752af4b8fe6f2a2ee9645442d44edff8e08bff52baab93bc160e2b58210
+      - current plugin c02ea12 assets matched release SHA-256: main.js 462a2bd672c3f3e4d907b8761f94bf0fca74ae23b49bc66c0eca7173e4702753, manifest.json d8e6a989bf720c6104e41d076dc4255c3d7557cdadebb1aabcc811469e128d7e, styles.css 8764243cae0351ebdbb76e770c4feffcb1956ff42420d4ec159212dc7a8535ed
+      - rename p02-local.md to p02-rerun.md produced event sequence 6 with the same obj_dbd9af14f23c970f036960a39114b00d and text/markdown content type
+      - local update produced event sequence 7 and exact 63-byte sha256:365f4bd21bfbc9b66b17be3060b7b8a0d0f390d58c4bb1c5b9dad1a257ab9b90
+      - local delete produced event sequence 8 and a tombstone for the same object and checksum
+      - deleted path is absent from the vault and ABCM REST returns HTTP 404
+      - each local action has exactly one durable sync event, journal receipt, and apply receipt
+      - final cursor cur_1_8_90afdc8ace96e9a9413990c4 has zero open conflicts
+      - lifecycle completion was verified against ABCM commit 6bf599e749eb27f285ff1fad1bb881c91d02d3cd
+    notes: Local-to-server create, identity-preserving rename, update, and delete passed with exact bytes and no duplicate operation.
   P03:
     status: pass
     evidence:
@@ -195,8 +209,14 @@ failures:
     symptom: Non-JSON scope.yaml content was eagerly parsed as JSON and reported as an unreachable service.
     mutationObserved: false
     correctiveCommit: 16e9f43c980cf669ced4488e7ed26704b1d0b22f
+  - status: corrected
+    symptom: The first Markdown create was classified as application/octet-stream although its bytes and checksum were exact.
+    mutationObserved: true
+    correctiveCommit: c02ea12ba9c7ea599396a87a13e3a87b8757cf2f
+    verification: Subsequent move and update events used text/markdown; charset=utf-8 with the same stable object identity.
 correctiveCommits:
   - 16e9f43c980cf669ced4488e7ed26704b1d0b22f
+  - c02ea12ba9c7ea599396a87a13e3a87b8757cf2f
 finalDecision: pending
-reviewedAtUtc: 2026-08-17T23:25:18Z
+reviewedAtUtc: 2026-08-18T07:46:30Z
 ```
