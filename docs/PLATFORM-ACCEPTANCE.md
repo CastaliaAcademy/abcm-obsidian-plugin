@@ -104,8 +104,9 @@ Expected: no silent loss, no timestamp winner, and every unaffected object conve
 - [x] Install and pair
 - [ ] Initial preview has no pre-confirmation mutation
 - [x] Create/update/delete/rename both directions
-- [ ] Network loss, sleep, restart, and recovery
-- [ ] Conflict and revoke/re-pair
+- [x] Network loss, sleep, restart, and recovery
+- [x] Conflict and revoke/re-pair
+- [x] Portable-path and service-directory rejection
 
 ## Linux Ubuntu LTS
 
@@ -152,13 +153,13 @@ platform: windows-11
 osVersion: "10.0.26200.9168"
 deviceModel: DESKTOP-JBDGE1E
 obsidianVersion: 1.13.7
-pluginCommit: 16e9f43c980cf669ced4488e7ed26704b1d0b22f
+pluginCommit: 9ced6213174e7928e73cadeeb6bac9cf36a649fb
 pluginVersion: 0.1.0
 releaseAssetSha256:
-  main.js: d467de2aec8a62b8355308e0c06cde23dfd29774c3cc3162d510b052cc033630
+  main.js: edede174653d2cf18b2066a26ed9251d134a2ae42a3f45640ff0c23eb868a7c1
   manifest.json: d8e6a989bf720c6104e41d076dc4255c3d7557cdadebb1aabcc811469e128d7e
   styles.css: 8764243cae0351ebdbb76e770c4feffcb1956ff42420d4ec159212dc7a8535ed
-abcmCommit: 9937dcde49f2c40396f650701fe98ab89820e91c
+abcmCommit: 67c98a7c866a4a68e9b490a7eeedf832b41a923c
 abcmVersion: 0.1.0
 endpointType: http-loopback
 workspaceId: abcm-acceptance-windows
@@ -214,7 +215,50 @@ scenarioResults:
       - foreground synchronization wrote bytes identical to the REST upload into the vault
       - object version advanced from 1 to 2 and the journal contains exactly the create and external update, with one receipt each and no echo event
     notes: Binary round trip passed in both directions without UTF-8 decoding, newline normalization, or content-type drift.
-knownLimitations: []
+  P05:
+    status: pass
+    evidence:
+      - an offline local edit plus rename survived Obsidian termination and restart while an unrelated remote file was added
+      - reconnect produced one identity-preserving move at event sequence 18 for objectId prefix obj_a0f7e4fe with no delete/create echo
+      - p05-v2-renamed.md converged at sha256:1ff1d47339deca035deb1581d49fb13ff8e792de23d031290938fc8f416e161f and p05-v2-remote.md at sha256:3657b3b79236dc6955c0f3f4b40fd615bd22da2445ac83d209800b3bb2bb35bd
+      - final cursor and base state persisted with empty outbox, conflicts, and pendingMoves
+    notes: Foreground resume recovered both directions exactly once after the offline restart.
+  P06:
+    status: pass
+    evidence:
+      - concurrent update created conflict_3398994cb5724454b12591442fb0ed9b and preserved local sha256:ed323346e1abc8fc342c8d95ec0adc37e3238fddcd472e907c6297f814b93e0c plus server artifact sha256:fbecb38fee20e36e45a88deacce58329544b9397315694040f470e70ff1cabc2 while an unrelated object converged
+      - Keep local was selected in the real conflict modal and converged both replicas to sha256:ed323346e1abc8fc342c8d95ec0adc37e3238fddcd472e907c6297f814b93e0c
+      - delete/update created conflict_57949792b7474999a0cf362d86723cf8; Keep server restored p06-delete-update.md at sha256:fcba1bdb272c871ae1ef143fbaaf28b2a1c8ef8bf033a81029afcdf067c8ee83
+      - move/move created conflict_2d23545ef02c4ed3a2fd6002945c187f; Keep both preserved the server object identity at p06-move-server.md and created Recovered p06-move-local.md, both sha256:a0479e9b62a5b92b95dc6f7e041713e07fe4df13f9646933c4b028a5d4840ce0
+      - _ABCM Conflicts remained visible in the vault but absent from synchronized objects
+      - final cursor has empty outbox, conflicts, and pendingMoves
+    notes: All three UI resolutions passed. Two defects found during the run were retained below and corrected by 71bb612 and 9ced621.
+  P07:
+    status: pass
+    evidence:
+      - device_473bd50e1621d52e12ca52394487b7eb was revoked through the administrative API
+      - rejected pull/push returned HTTP 401 and status auth-required without changing cursor cur_1_v_08d38d95bb1128d1cba3193e or the persisted state digest
+      - local pending bytes remained sha256:b26ffb48dae910fb7aeb3b075ac0ae93aaec81db2fdf4536922079bfbcfbf469 and the remote-after-revoke object was not pulled before authorization
+      - Clear authorization and Pair device were exercised through the real settings UI with a fresh one-time code
+      - the old credential remained invalid and the same stable deviceId received a different credential after corrective ABCM commit 67c98a7
+      - p07-revoke.md converged at sha256:b26ffb48dae910fb7aeb3b075ac0ae93aaec81db2fdf4536922079bfbcfbf469 and p07-remote-after-revoke.md at sha256:494c2c9dac91e012dfb81425e76e8c99e1fa2e581652bb568e3d861075bbcd4e
+      - final cursor cur_1_w_e7a3677787630285c92c6e31 has empty outbox, conflicts, and pendingMoves
+    notes: Revocation is fail-closed; successful re-pair resumes the retained base state without copying or exposing either credential.
+  P08:
+    status: pass
+    evidence:
+      - ordinary p08-café.md synchronized through the Windows Vault API with exact sha256:821dfb121cdd6ce82dd6c42669f76d9d64e74b05449103edac231809e490c4cf
+      - an NFD spelling colliding with the NFC file was rejected by the Windows Vault API as File already exists; cursor and object count were unchanged
+      - P08-CASE.md colliding with p08-case.md was rejected as File already exists; the server retained only the lowercase object
+      - CON.md was rejected by Obsidian as File name is forbidden: CON before any local or server mutation
+      - traversal vaultFolder ../escape and the actual configDir .obsidian both set plugin status error with unchanged cursor and object count; the valid mapping was restored and resynchronized
+      - a sentinel under _ABCM Conflicts was excluded from inventory, advanced no cursor, and was removed after verification
+      - server fixture contains only the two permitted p08-case.md and NFC p08-café.md objects; outbox and conflicts are empty
+    notes: Windows physical rejection and the portable-path automated contract jointly cover case-fold, NFC/NFD, reserved names, traversal, configDir, and service-owned paths.
+knownLimitations:
+  - This Windows run does not substitute for the still-required physical Linux Ubuntu LTS and iPadOS runs.
+  - Cross-device Windows/iPad and Linux/iPad P09 evidence remains pending.
+  - P01 explicit decline/no-mutation remains pending even though confirmed preview, restart persistence, and later lifecycle checks pass.
 failures:
   - status: corrected
     symptom: Non-JSON scope.yaml content was eagerly parsed as JSON and reported as an unreachable service.
@@ -225,9 +269,27 @@ failures:
     mutationObserved: true
     correctiveCommit: c02ea12ba9c7ea599396a87a13e3a87b8757cf2f
     verification: Subsequent move and update events used text/markdown; charset=utf-8 with the same stable object identity.
+  - status: corrected
+    symptom: A pull-time concurrent local update surfaced as a generic sync error instead of a recoverable explicit conflict.
+    mutationObserved: false
+    correctiveCommit: 71bb612f
+    verification: The rerun created conflict_339899, preserved both byte sequences, and allowed Keep local through the UI.
+  - status: corrected
+    symptom: Keep both resolved the server conflict but retained a stale pendingMoves hint for the original object.
+    mutationObserved: false
+    correctiveCommit: 9ced6213174e7928e73cadeeb6bac9cf36a649fb
+    verification: Regression test asserts an empty pendingMoves set; installed release passed all 60 tests.
+  - status: corrected
+    symptom: Re-pair after revoke returned HTTP 403 because the server rejected the plugin's stable deviceId even after its old grant was revoked.
+    mutationObserved: false
+    correctiveCommit: 67c98a7c866a4a68e9b490a7eeedf832b41a923c
+    verification: Active duplicate ids remain forbidden, while a fresh one-time code reissues only a revoked id and the physical P07 rerun converged.
 correctiveCommits:
   - 16e9f43c980cf669ced4488e7ed26704b1d0b22f
   - c02ea12ba9c7ea599396a87a13e3a87b8757cf2f
+  - 71bb612f
+  - 9ced6213174e7928e73cadeeb6bac9cf36a649fb
+  - 67c98a7c866a4a68e9b490a7eeedf832b41a923c
 finalDecision: pending
-reviewedAtUtc: 2026-08-18T08:21:40Z
+reviewedAtUtc: 2026-08-18T13:02:34Z
 ```
