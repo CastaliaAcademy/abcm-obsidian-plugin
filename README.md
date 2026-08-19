@@ -1,92 +1,59 @@
-# Obsidian Sample Plugin
+# ABCM Sync for Obsidian
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+ABCM Sync is a conflict-safe, bidirectional connector between one folder in an Obsidian vault and one explicitly paired ABCM workspace/project.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+## Private beta status
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
+The protocol, server endpoints, exact-byte create/update/delete/move operations, durable outbox, conflict recovery, offline retry, and foreground synchronization are implemented. Automated server and plugin gates pass. Public beta still requires recorded acceptance on physical Windows, Linux, and iPadOS devices.
 
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open modal (simple)" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and outputs a Notice on click.
-- Registers a global interval which logs 'setInterval' to the console.
+Do not publish a GitHub release or submit the plugin to `obsidian-releases` until the platform matrix is complete and publication is separately approved.
 
-## First time developing plugins?
+## Supported behavior
 
-Quick starting guide for new plugin devs:
+- Windows, Linux, and iPadOS use the same mobile-compatible sync core.
+- The plugin uses Obsidian `requestUrl`, Vault, FileManager, SecretStorage, and localStorage APIs.
+- Initial synchronization shows a non-mutating preview and requires explicit confirmation.
+- Text and binary files preserve exact bytes within ABCM limits.
+- Local create, modify, delete, and rename events are debounced after `Workspace.onLayoutReady`.
+- Synchronization runs manually, periodically, and when Obsidian returns to the foreground.
+- Conflicts preserve all present versions and require **Keep local**, **Keep server**, or **Keep both**.
+- A revoked credential pauses synchronization and requires re-pairing.
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `src/main.ts` to `main.js`.
-- Make changes to `src/main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+ABCM Sync does not promise background networking while Obsidian is suspended or closed on iPadOS. Durable cursor/outbox state resumes when the app becomes active again.
 
-## Releasing new releases
+## Installation for private testing
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+1. Run `npm ci` and `npm run release:prepare`.
+2. Verify `release/SHA256SUMS`.
+3. Copy `release/main.js`, `release/manifest.json`, and `release/styles.css` into `<Vault>/.obsidian/plugins/abcm-sync/`.
+4. Reload Obsidian, enable **ABCM Sync**, and open its settings.
+5. Enter the HTTPS ABCM endpoint and a one-time project-scoped pairing code.
+6. Choose the vault folder and run **Preview initial sync**.
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+## Operating limits
 
-## Adding your plugin to the community plugin list
+- One ABCM project mapping per plugin installation.
+- Maximum inventory: 10,000 files; changes page: 1,000; apply batch: 100.
+- Chunked upload, CRDT/real-time collaboration, automatic merge, guaranteed background iPadOS sync, `.obsidian` synchronization, and simultaneous directory-mirror ownership are outside version 0.1.
+- `_ABCM Conflicts` is service-owned, visible, and excluded from synchronization.
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+## Privacy and security
 
-## How to use
+The plugin contacts only the configured ABCM endpoint. Selected filenames, metadata, and file bytes are sent because they are required for synchronization. It has no telemetry, advertising, analytics, or remote-code execution.
 
-- Clone this repo.
-- Make sure your NodeJS is at least v18 (`node --version`).
-- `npm i` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+The device credential is scoped and revocable and is stored only in Obsidian SecretStorage. Markdown, ordinary plugin data, logs, conflict artifacts, and ABCM documents must never contain it. See [Privacy](docs/PRIVACY.md), [Recovery](docs/RECOVERY.md), and [Platform acceptance](docs/PLATFORM-ACCEPTANCE.md).
 
-## Manually installing the plugin
+## Development
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
-
-## Improve code quality with eslint
-
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code.
-- This project already has eslint preconfigured, you can invoke a check by running`npm run lint`
-- Together with a custom eslint [plugin](https://github.com/obsidianmd/eslint-plugin) for Obsidan specific code guidelines.
-- A GitHub action is preconfigured to automatically lint every commit on all branches.
-
-## Funding URL
-
-You can include funding URLs where people who use your plugin can financially support it.
-
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
-
-```json
-{
-	"fundingUrl": "https://buymeacoffee.com"
-}
+```bash
+npm ci
+npm run check
+npm run release:prepare
+npm run release:check
 ```
 
-If you have multiple URLs, you can also do:
+Release assets are generated under ignored `release/`; `main.js` and generated assets are not committed.
 
-```json
-{
-	"fundingUrl": {
-		"Buy Me a Coffee": "https://buymeacoffee.com",
-		"GitHub Sponsor": "https://github.com/sponsors",
-		"Patreon": "https://www.patreon.com/"
-	}
-}
-```
+## License
 
-## API Documentation
-
-See https://docs.obsidian.md
+0BSD
