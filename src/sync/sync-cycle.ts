@@ -421,6 +421,11 @@ async function flushOutbox(
 		else {
 			const checksum = receipt.checksum ?? entry.checksum;
 			if (checksum === null) throw new Error("ABCM returned no checksum for '" + entry.path + "'.");
+			// An operator-approved integration amendment canonicalizes frontmatter on the server.
+			// Do not acknowledge its receipt until the vault contains those exact canonical bytes.
+			if (entry.checksum !== checksum) {
+				await verifiedRemoteContent(client, local, entry.path, checksum, options);
+			}
 			setObject(state, { objectId: receipt.objectId, path: entry.path, checksum });
 			if (entry.kind === 'move') {
 				state.pendingMoves = state.pendingMoves.filter((move) => move.objectId !== receipt.objectId);

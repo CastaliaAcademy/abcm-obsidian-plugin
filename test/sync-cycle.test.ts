@@ -163,6 +163,91 @@ describe('restart-safe foreground synchronization cycle', () => {
 		});
 	});
 
+	it('replaces pushed bytes with checksum-verified canonical server content before acknowledging the receipt', async () => {
+		const base = bytes('accepted-v1');
+		const edited = bytes('accepted-local-edit');
+		const canonical = bytes('accepted-v2-with-generated-artifact-id');
+		const baseChecksum = await sha256(base);
+		const editedChecksum = await sha256(edited);
+		const canonicalChecksum = await sha256(canonical);
+		const replica = new MemoryReplica(new Map([['artifacts/adr/ADR-0001.md', edited]]), sha256);
+		const persisted: PersistedSyncState[] = [];
+		let canonicalReads = 0;
+		const client: SyncApi = {
+			preview: () => Promise.resolve(preview('cursor_accepted_0001', [{
+				action: 'update-server',
+				objectId: 'obj_accepted_0001',
+				path: 'artifacts/adr/ADR-0001.md',
+				localChecksum: editedChecksum,
+				serverChecksum: baseChecksum,
+				size: edited.byteLength,
+			}])),
+			changes: (cursor) => Promise.resolve(emptyChanges(cursor)),
+			readContent: () => {
+				canonicalReads += 1;
+				return Promise.resolve(canonical);
+			},
+			apply: (_pinned, operations) => Promise.resolve({ receipts: [{
+				status: 'applied',
+				operationId: operations[0]?.operationId ?? '',
+				cursor: 'cursor_accepted_0002',
+				objectId: 'obj_accepted_0001',
+				checksum: canonicalChecksum,
+			}] }),
+		};
+		const state: PersistedSyncState = {
+			...createInitialSyncState(),
+			cursor: 'cursor_accepted_0000',
+			objects: [{ objectId: 'obj_accepted_0001', path: 'artifacts/adr/ADR-0001.md', checksum: baseChecksum }],
+		};
+
+		const result = await runSyncCycle(client, replica, {
+			...cycleOptions(state, persisted),
+			checksum: sha256,
+		});
+
+		expect(canonicalReads).toBe(1);
+		expect(new Uint8Array(await replica.read('artifacts/adr/ADR-0001.md'))).toEqual(new Uint8Array(canonical));
+		expect(result.objects).toEqual([{ objectId: 'obj_accepted_0001', path: 'artifacts/adr/ADR-0001.md', checksum: canonicalChecksum }]);
+		expect(result.outbox).toEqual([]);
+		expect(result.cursor).toBe('cursor_accepted_0002');
+	});
+
+	it('keeps the durable outbox and prior object state when canonical server bytes fail checksum verification', async () => {
+		const baseChecksum = await sha256(bytes('accepted-v1'));
+		const edited = bytes('accepted-local-edit');
+		const editedChecksum = await sha256(edited);
+		const canonicalChecksum = await sha256(bytes('expected-canonical'));
+		const replica = new MemoryReplica(new Map([['artifacts/adr/ADR-0001.md', edited]]), sha256);
+		const persisted: PersistedSyncState[] = [];
+		const client: SyncApi = {
+			preview: () => Promise.resolve(preview('cursor_verify_0001', [{
+				action: 'update-server', objectId: 'obj_accepted_0001', path: 'artifacts/adr/ADR-0001.md',
+				localChecksum: editedChecksum, serverChecksum: baseChecksum, size: edited.byteLength,
+			}])),
+			changes: (cursor) => Promise.resolve(emptyChanges(cursor)),
+			readContent: () => Promise.resolve(bytes('corrupt-canonical')),
+			apply: (_pinned, operations) => Promise.resolve({ receipts: [{
+				status: 'applied', operationId: operations[0]?.operationId ?? '', cursor: 'cursor_verify_0002',
+				objectId: 'obj_accepted_0001', checksum: canonicalChecksum,
+			}] }),
+		};
+		const state: PersistedSyncState = {
+			...createInitialSyncState(),
+			cursor: 'cursor_verify_0000',
+			objects: [{ objectId: 'obj_accepted_0001', path: 'artifacts/adr/ADR-0001.md', checksum: baseChecksum }],
+		};
+
+		await expect(runSyncCycle(client, replica, {
+			...cycleOptions(state, persisted), checksum: sha256,
+		})).rejects.toThrow("Remote file changed after synchronization snapshot at 'artifacts/adr/ADR-0001.md'.");
+
+		expect(new Uint8Array(await replica.read('artifacts/adr/ADR-0001.md'))).toEqual(new Uint8Array(edited));
+		expect(persisted.some((snapshot) => snapshot.objects.some((object) => object.checksum === canonicalChecksum))).toBe(false);
+		expect(persisted.some((snapshot) => snapshot.cursor === 'cursor_verify_0002')).toBe(false);
+		expect(persisted.at(-1)?.outbox).toHaveLength(1);
+	});
+
 	it('replays the exact operation identity after a transport failure', async () => {
 		const replica = new MemoryReplica(new Map([['a.md', bytes('a')]]));
 		const firstPersistence: PersistedSyncState[] = [];
