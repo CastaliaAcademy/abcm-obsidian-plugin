@@ -61,7 +61,7 @@ class MemoryReplica implements LocalReplica {
 }
 
 describe('expired cursor recovery', () => {
-	it('keeps the durable outbox until a replacement preview captures the same local bytes', async () => {
+	it('replays the durable outbox before recovering an expired change cursor', async () => {
 		const oldOperationId = 'op_old00000001';
 		const state: PersistedSyncState = {
 			...createInitialSyncState(),
@@ -95,7 +95,7 @@ describe('expired cursor recovery', () => {
 			},
 			preview: (cursor, inventory, _include, _exclude, base) => {
 				expect(cursor).toBeNull();
-				expect(base).toEqual(state.objects);
+				expect(base).toEqual([{ objectId: 'obj_00000001', path: 'a.md', checksum: digest('b') }]);
 				expect(inventory[0]?.checksum).toBe(digest('b'));
 				return Promise.resolve({
 					previewId: 'preview_fresh',
@@ -139,8 +139,11 @@ describe('expired cursor recovery', () => {
 			persistState: (next) => { persisted.push(structuredClone(next)); },
 		});
 
-		expect(persisted.some((snapshot) => snapshot.cursor === null && snapshot.outbox[0]?.operationId === oldOperationId)).toBe(true);
-		expect(applied[0]).toMatchObject({ operationId: 'op_fresh000001', kind: 'update', checksum: digest('b') });
+		expect(persisted.some((snapshot) => snapshot.cursor === null && snapshot.outbox.length === 0)).toBe(true);
+		expect(applied).toEqual([
+			expect.objectContaining({ operationId: oldOperationId, kind: 'update', checksum: digest('b'), baseChecksum: digest('a') }),
+			expect.objectContaining({ operationId: 'op_fresh000001', kind: 'update', checksum: digest('b'), baseChecksum: digest('b') }),
+		]);
 		expect(confirmCalls).toBe(0);
 		expect(result).toMatchObject({ cursor: 'cursor_applied', outbox: [] });
 	});

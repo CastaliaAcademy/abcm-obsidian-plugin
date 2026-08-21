@@ -146,6 +146,34 @@ function parseOutbox(value: unknown): PersistedOutboxEntry {
 		if (typeof value.previousPath !== 'string') throw new Error('Persisted move has no source path.');
 		assertPortablePath(value.previousPath);
 	}
+	let receipt: PersistedOutboxEntry['receipt'];
+	if (value.receipt !== undefined) {
+		if (!isRecord(value.receipt)) throw new Error('Persisted outbox receipt is invalid.');
+		const statuses = new Set(['applied', 'duplicate', 'conflict']);
+		if (
+			typeof value.receipt.operationId !== 'string' ||
+			value.receipt.operationId !== value.operationId ||
+			typeof value.receipt.cursor !== 'string' ||
+			typeof value.receipt.objectId !== 'string' ||
+			value.receipt.objectId !== value.objectId ||
+			typeof value.receipt.status !== 'string' ||
+			!statuses.has(value.receipt.status) ||
+			!(value.receipt.checksum === null || typeof value.receipt.checksum === 'string') ||
+			!(value.receipt.conflictId === undefined || typeof value.receipt.conflictId === 'string')
+		) throw new Error('Persisted outbox receipt identity is invalid.');
+		if (value.receipt.checksum !== null) assertChecksum(value.receipt.checksum);
+		if (value.receipt.status === 'conflict' && typeof value.receipt.conflictId !== 'string') {
+			throw new Error('Persisted conflict receipt has no conflict identity.');
+		}
+		receipt = {
+			operationId: value.receipt.operationId,
+			cursor: value.receipt.cursor,
+			objectId: value.receipt.objectId,
+			checksum: value.receipt.checksum,
+			status: value.receipt.status as NonNullable<PersistedOutboxEntry['receipt']>['status'],
+			...(typeof value.receipt.conflictId === 'string' ? { conflictId: value.receipt.conflictId } : {}),
+		};
+	}
 	return {
 		operationId: value.operationId,
 		objectId: value.objectId,
@@ -159,6 +187,7 @@ function parseOutbox(value: unknown): PersistedOutboxEntry {
 		previewId: value.previewId,
 		serverRevision: value.serverRevision,
 		previewCursor: value.previewCursor,
+		...(receipt === undefined ? {} : { receipt }),
 	};
 }
 

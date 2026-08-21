@@ -248,6 +248,65 @@ describe('restart-safe foreground synchronization cycle', () => {
 		expect(persisted.at(-1)?.outbox).toHaveLength(1);
 	});
 
+	it('resumes a canonical receipt after vault replacement succeeded but the final durable commit failed', async () => {
+		const baseChecksum = await sha256(bytes('accepted-v1'));
+		const edited = bytes('accepted-local-edit');
+		const editedChecksum = await sha256(edited);
+		const canonical = bytes('accepted-canonical');
+		const canonicalChecksum = await sha256(canonical);
+		const path = 'artifacts/adr/ADR-0001.md';
+		const replica = new MemoryReplica(new Map([[path, edited]]), sha256);
+		const persisted: PersistedSyncState[] = [];
+		const initial: PersistedSyncState = {
+			...createInitialSyncState(),
+			cursor: 'cursor_restart_0000',
+			objects: [{ objectId: 'obj_restart_0001', path, checksum: baseChecksum }],
+		};
+		const firstClient: SyncApi = {
+			preview: () => Promise.resolve(preview('cursor_restart_0001', [{
+				action: 'update-server', objectId: 'obj_restart_0001', path,
+				localChecksum: editedChecksum, serverChecksum: baseChecksum, size: edited.byteLength,
+			}])),
+			changes: (cursor) => Promise.resolve(emptyChanges(cursor)),
+			readContent: () => Promise.resolve(canonical),
+			apply: (_pinned, operations) => Promise.resolve({ receipts: [{
+				status: 'applied', operationId: operations[0]?.operationId ?? '', cursor: 'cursor_restart_0002',
+				objectId: 'obj_restart_0001', checksum: canonicalChecksum,
+			}] }),
+		};
+
+		await expect(runSyncCycle(firstClient, replica, {
+			...cycleOptions(initial, persisted),
+			checksum: sha256,
+			persistState: (next) => {
+				if (next.outbox.length === 0 && next.objects.some((object) => object.checksum === canonicalChecksum)) {
+					throw new Error('simulated final durable commit failure');
+				}
+				persisted.push(structuredClone(next));
+			},
+		})).rejects.toThrow('simulated final durable commit failure');
+		expect(await sha256(await replica.read(path))).toBe(canonicalChecksum);
+		const restartState = persisted.at(-1)!;
+		expect(restartState.outbox[0]?.receipt?.checksum).toBe(canonicalChecksum);
+		expect(restartState.outbox[0]?.receipt?.cursor).toBe('cursor_restart_0002');
+
+		const secondClient: SyncApi = {
+			preview: () => Promise.resolve(preview('cursor_restart_0002', [{
+				action: 'noop', objectId: 'obj_restart_0001', path,
+				localChecksum: canonicalChecksum, serverChecksum: canonicalChecksum, size: canonical.byteLength,
+			}])),
+			changes: (cursor) => Promise.resolve(emptyChanges(cursor)),
+			readContent: () => Promise.resolve(canonical),
+			apply: () => Promise.reject(new Error('Persisted receipt must not be replayed.')),
+		};
+		const recovered = await runSyncCycle(secondClient, replica, {
+			...cycleOptions(restartState, []), checksum: sha256,
+		});
+		expect(recovered.outbox).toEqual([]);
+		expect(recovered.cursor).toBe('cursor_restart_0002');
+		expect(recovered.objects).toEqual([{ objectId: 'obj_restart_0001', path, checksum: canonicalChecksum }]);
+	});
+
 	it('replays the exact operation identity after a transport failure', async () => {
 		const replica = new MemoryReplica(new Map([['a.md', bytes('a')]]));
 		const firstPersistence: PersistedSyncState[] = [];

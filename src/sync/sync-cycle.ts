@@ -48,7 +48,10 @@ function cloneState(state: PersistedSyncState): PersistedSyncState {
 		schemaVersion: 5,
 		cursor: state.cursor,
 		objects: state.objects.map((object) => ({ ...object })),
-		outbox: state.outbox.map((entry) => ({ ...entry })),
+		outbox: state.outbox.map((entry) => ({
+			...entry,
+			...(entry.receipt === undefined ? {} : { receipt: { ...entry.receipt } }),
+		})),
 		pendingMoves: state.pendingMoves.map((move) => ({ ...move })),
 		conflicts: state.conflicts.map((conflict) => ({ ...conflict, local: { ...conflict.local }, server: { ...conflict.server } })),
 		recentOperationIds: [...state.recentOperationIds],
@@ -391,21 +394,33 @@ async function flushOutbox(
 				entry.previewCursor !== first.previewCursor,
 		)
 	) throw new Error('Persisted outbox contains operations from different previews.');
-	const operations = await Promise.all(state.outbox.map((entry) => operationFromOutbox(local, entry, options)));
 	const preview: PreviewResult = {
 		previewId: first.previewId,
 		serverRevision: first.serverRevision,
 		cursor: first.previewCursor,
 		items: [],
 	};
-	const result = await client.apply(preview, operations);
-	if (result.receipts.length !== operations.length || result.receipts.some((receipt, index) => receipt.operationId !== operations[index]?.operationId)) {
-		throw new Error('ABCM apply receipts do not match the durable outbox.');
+	const receiptCount = state.outbox.filter((entry) => entry.receipt !== undefined).length;
+	if (receiptCount !== 0 && receiptCount !== state.outbox.length) {
+		throw new Error('Persisted outbox contains a partial receipt checkpoint.');
+	}
+	if (receiptCount === 0) {
+		const operations = await Promise.all(state.outbox.map((entry) => operationFromOutbox(local, entry, options)));
+		const result = await client.apply(preview, operations);
+		if (result.receipts.length !== operations.length || result.receipts.some((receipt, index) => receipt.operationId !== operations[index]?.operationId)) {
+			throw new Error('ABCM apply receipts do not match the durable outbox.');
+		}
+		state.outbox = state.outbox.map((entry, index) => ({
+			...entry,
+			receipt: { ...result.receipts[index]! },
+		}));
+		// Persist the immutable server receipts before any canonical server bytes replace local edits.
+		await persist(options, state);
 	}
 	const queued = state.outbox;
 	const acknowledgedOperationIds: string[] = [];
-	for (const [index, entry] of queued.entries()) {
-		const receipt = result.receipts[index];
+	for (const entry of queued) {
+		const receipt = entry.receipt;
 		if (receipt === undefined) continue;
 		if (receipt.status === 'conflict') {
 			if (receipt.conflictId === undefined) throw new Error('ABCM returned a conflict receipt without conflictId.');
@@ -433,7 +448,7 @@ async function flushOutbox(
 		}
 	}
 	rememberOperations(state, acknowledgedOperationIds);
-	state.cursor = result.receipts.at(-1)?.cursor ?? state.cursor;
+	state.cursor = queued.at(-1)?.receipt?.cursor ?? state.cursor;
 	state.outbox = [];
 	await persist(options, state);
 }
@@ -586,6 +601,11 @@ export async function runSyncCycle(
 	options: SyncCycleOptions,
 ): Promise<PersistedSyncState> {
 	const state = cloneState(options.state);
+	if (state.cursor !== null && state.outbox.length > 0) {
+		// A durable outbox is replayed before pulling its server echo. This also resumes a
+		// receipt checkpoint after canonical vault bytes were written but not committed.
+		await flushOutbox(client, local, state, options);
+	}
 
 	let recoveredOutbox: PersistedOutboxEntry[] | null = state.cursor === null && state.outbox.length > 0
 		? state.outbox.map((entry) => ({ ...entry }))
