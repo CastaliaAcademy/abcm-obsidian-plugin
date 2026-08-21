@@ -61,6 +61,51 @@ class MemoryReplica implements LocalReplica {
 }
 
 describe('expired cursor recovery', () => {
+	it('resnapshots a durable outbox when its pinned preview expired before apply', async () => {
+		const state: PersistedSyncState = {
+			...createInitialSyncState(),
+			cursor: 'cursor_expired',
+			objects: [{ objectId: 'obj_00000001', path: 'a.md', checksum: digest('a') }],
+			outbox: [{
+				operationId: 'op_expired000001', objectId: 'obj_00000001', path: 'a.md', kind: 'update',
+				checksum: digest('b'), baseChecksum: digest('a'), size: 1, contentType: 'text/markdown',
+				previewId: 'preview_expired', serverRevision: 'revision-expired', previewCursor: 'cursor_expired',
+			}],
+		};
+		const persisted: PersistedSyncState[] = [];
+		const applied: ApplyOperation[][] = [];
+		let applyCalls = 0;
+		const client: SyncApi = {
+			changes: (cursor) => Promise.resolve({ changes: [], nextCursor: cursor, hasMore: false }),
+			preview: (cursor, inventory, _include, _exclude, base) => {
+				expect(cursor).toBeNull();
+				expect(base).toEqual(state.objects);
+				expect(inventory[0]?.checksum).toBe(digest('b'));
+				return Promise.resolve({
+					previewId: 'preview_fresh', serverRevision: 'revision-fresh', cursor: 'cursor_fresh',
+					items: [{ action: 'update-server', objectId: 'obj_00000001', path: 'a.md', localChecksum: digest('b'), serverChecksum: digest('a'), size: 1 }],
+				});
+			},
+			apply: (_preview, operations) => {
+				applyCalls += 1;
+				applied.push(operations);
+				if (applyCalls === 1) return Promise.reject(new AbcmSyncHttpError('expired preview', 409, 'SYNC_OBJECT_CONFLICT'));
+				return Promise.resolve({ receipts: [{ status: 'applied', operationId: operations[0]?.operationId ?? '', cursor: 'cursor_applied', objectId: 'obj_00000001', checksum: digest('b') }] });
+			},
+			readContent: () => Promise.resolve(bytes('b')),
+		};
+
+		const result = await runSyncCycle(client, new MemoryReplica(new Map([['a.md', bytes('b')]])), {
+			state, deviceId: 'device_00000001', include: [], exclude: [], operationId: () => 'op_fresh000001',
+			checksum, base64: () => 'Yg==', persistState: (next) => { persisted.push(structuredClone(next)); },
+		});
+
+		expect(persisted.some((snapshot) => snapshot.cursor === null && snapshot.outbox[0]?.operationId === 'op_expired000001')).toBe(true);
+		expect(applied[0]?.[0]?.operationId).toBe('op_expired000001');
+		expect(applied[1]?.[0]).toMatchObject({ operationId: 'op_fresh000001', baseChecksum: digest('a'), checksum: digest('b') });
+		expect(result).toMatchObject({ cursor: 'cursor_applied', outbox: [] });
+	});
+
 	it('replays the durable outbox before recovering an expired change cursor', async () => {
 		const oldOperationId = 'op_old00000001';
 		const state: PersistedSyncState = {

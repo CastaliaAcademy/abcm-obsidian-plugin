@@ -253,6 +253,10 @@ function isExpiredCursor(error: unknown): boolean {
 	return error instanceof AbcmSyncHttpError && error.code === 'SYNC_CURSOR_EXPIRED';
 }
 
+function isRejectedPinnedOutbox(error: unknown): boolean {
+	return error instanceof AbcmSyncHttpError && error.code === 'SYNC_OBJECT_CONFLICT';
+}
+
 function isRecoverableHistoryError(error: unknown): boolean {
 	return isExpiredCursor(error) ||
 		error instanceof RemoteSnapshotChangedError ||
@@ -601,16 +605,25 @@ export async function runSyncCycle(
 	options: SyncCycleOptions,
 ): Promise<PersistedSyncState> {
 	const state = cloneState(options.state);
-	if (state.cursor !== null && state.outbox.length > 0) {
-		// A durable outbox is replayed before pulling its server echo. This also resumes a
-		// receipt checkpoint after canonical vault bytes were written but not committed.
-		await flushOutbox(client, local, state, options);
-	}
-
 	let recoveredOutbox: PersistedOutboxEntry[] | null = state.cursor === null && state.outbox.length > 0
 		? state.outbox.map((entry) => ({ ...entry }))
 		: null;
 	let recoveryCount = 0;
+	if (state.cursor !== null && state.outbox.length > 0) {
+		// A durable outbox is replayed before pulling its server echo. This also resumes a
+		// receipt checkpoint after canonical vault bytes were written but not committed.
+		try {
+			await flushOutbox(client, local, state, options);
+		} catch (error) {
+			if (!isRejectedPinnedOutbox(error)) throw error;
+			// An unapplied outbox can outlive its server preview. Preserve its local bytes as
+			// recovery intent and obtain a fresh pinned preview before issuing a new operation.
+			recoveredOutbox = state.outbox.map((entry) => ({ ...entry }));
+			await recoverExpiredCursor(state, options);
+			recoveryCount += 1;
+		}
+	}
+
 	for (;;) {
 		try {
 			await pullOrderedChanges(client, local, state, options);
