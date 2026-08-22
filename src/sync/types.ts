@@ -101,6 +101,14 @@ export interface PersistedOutboxEntry {
 	previewId: string;
 	serverRevision: string;
 	previewCursor: string;
+	receipt?: {
+		operationId: string;
+		cursor: string;
+		objectId: string;
+		checksum: SyncChecksum | null;
+		status: 'applied' | 'duplicate' | 'conflict';
+		conflictId?: string;
+	};
 }
 
 export interface PersistedSyncState {

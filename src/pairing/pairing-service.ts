@@ -17,12 +17,40 @@ export interface PairingInput {
 	platform: SupportedPlatform;
 }
 
+export interface PairingStateLifecycle {
+	resetSyncState(): void;
+}
+
+export function clearPairingAuthorization(
+	settings: AbcmSyncSettings,
+): AbcmSyncSettings {
+	return {
+		...settings,
+		credentialSecretId: null,
+		paused: true,
+	};
+}
+
+function pairingScopeChanged(
+	current: AbcmSyncSettings,
+	next: Pick<AbcmSyncSettings, 'workspaceId' | 'projectId' | 'projectPrefix'>,
+): boolean {
+	return (
+		current.workspaceId !== '' &&
+		current.projectId !== '' &&
+		(current.workspaceId !== next.workspaceId ||
+			current.projectId !== next.projectId ||
+			current.projectPrefix !== next.projectPrefix)
+	);
+}
+
 export async function pairDevice(
 	transport: HttpTransport,
 	secrets: SecretWriter,
 	persist: (settings: AbcmSyncSettings) => Promise<void>,
 	settings: AbcmSyncSettings,
 	input: PairingInput,
+	lifecycle: PairingStateLifecycle,
 ): Promise<AbcmSyncSettings> {
 	const validated = validateSettings(settings);
 	const grant = await redeemPairing(
@@ -35,6 +63,7 @@ export async function pairDevice(
 			platform: input.platform,
 		},
 	);
+	if (pairingScopeChanged(validated, grant)) lifecycle.resetSyncState();
 	secrets.setSecret(DEVICE_CREDENTIAL_SECRET_ID, grant.credential);
 	const next: AbcmSyncSettings = {
 		...validated,

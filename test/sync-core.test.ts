@@ -107,6 +107,13 @@ describe('platform-neutral synchronization core', () => {
 				previewId: 'preview_00000001',
 				serverRevision: 'revision-1',
 				previewCursor: 'cursor_00000001',
+				receipt: {
+					operationId: 'op_00000001',
+					cursor: 'cursor_00000002',
+					objectId: base.objectId,
+					checksum: checksum('c'),
+					status: 'applied' as const,
+				},
 			}],
 			recentOperationIds: ['op_00000000'],
 		};

@@ -9,7 +9,14 @@ import {
 import { ObsidianHttpTransport } from './adapters/obsidian-http';
 import { ObsidianVaultReplica } from './adapters/obsidian-vault';
 import { AbcmSyncClient } from './api/sync-client';
-import { pairDevice } from './pairing/pairing-service';
+import {
+	clearPairingAuthorization,
+	pairDevice,
+} from './pairing/pairing-service';
+import {
+	pairingScopeBinding,
+	pairingScopeMatches,
+} from './pairing/scope-binding';
 import {
 	DEVICE_CREDENTIAL_SECRET_ID,
 	normalizeSettings,
@@ -36,6 +43,7 @@ import {
 } from './sync';
 
 const LOCAL_STATE_KEY = 'abcm-sync-state-v1';
+const LOCAL_SCOPE_KEY = 'abcm-sync-scope-v1';
 
 type SyncStatus =
 	| 'synced'
@@ -125,8 +133,18 @@ export default class AbcmSyncPlugin extends Plugin {
 				deviceId: this.settings.deviceId ?? randomId('device'),
 				platform: currentPlatform(),
 			},
+			{
+				resetSyncState: () => {
+					this.app.saveLocalStorage(
+						LOCAL_STATE_KEY,
+						createInitialSyncState(),
+					);
+				},
+			},
 		);
 		this.settings = { ...next, paused: false };
+		const scope = pairingScopeBinding(this.settings);
+		if (scope !== null) this.app.saveLocalStorage(LOCAL_SCOPE_KEY, scope);
 		this.retryAttempt = 0;
 		this.clearRetry();
 		this.setStatus('synced');
@@ -144,14 +162,7 @@ export default class AbcmSyncPlugin extends Plugin {
 
 	async rePair(): Promise<void> {
 		this.app.secretStorage.setSecret(DEVICE_CREDENTIAL_SECRET_ID, '');
-		this.settings = {
-			...this.settings,
-			workspaceId: '',
-			projectId: '',
-			projectPrefix: null,
-			credentialSecretId: null,
-			paused: true,
-		};
+		this.settings = clearPairingAuthorization(this.settings);
 		await this.saveData(this.settings);
 		this.trigger.cancel();
 		this.clearRetry();
@@ -304,6 +315,14 @@ export default class AbcmSyncPlugin extends Plugin {
 	}
 
 	private loadSyncState(): PersistedSyncState {
+		const scope = pairingScopeBinding(this.settings);
+		const storedScope: unknown = this.app.loadLocalStorage(LOCAL_SCOPE_KEY);
+		if (scope !== null && !pairingScopeMatches(storedScope, scope)) {
+			const initial = createInitialSyncState();
+			this.app.saveLocalStorage(LOCAL_STATE_KEY, initial);
+			this.app.saveLocalStorage(LOCAL_SCOPE_KEY, scope);
+			return initial;
+		}
 		const stored: unknown = this.app.loadLocalStorage(LOCAL_STATE_KEY);
 		return stored === null ? createInitialSyncState() : hydrateSyncState(stored);
 	}

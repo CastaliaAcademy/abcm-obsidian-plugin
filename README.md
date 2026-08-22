@@ -18,6 +18,7 @@ Do not publish a GitHub release or submit the plugin to `obsidian-releases` unti
 - Synchronization runs manually, periodically, and when Obsidian returns to the foreground.
 - Conflicts preserve all present versions and require **Keep local**, **Keep server**, or **Keep both**.
 - A revoked credential pauses synchronization and requires re-pairing.
+- Editing the current accepted ADR/RFC through an authorized write-capable pairing creates an operator-approved Amendment. The visible vault path stays on the current head, while the server archives the previous exact revision. Because the server canonicalizes lineage frontmatter, the plugin verifies the receipt checksum, fetches those canonical bytes, and replaces the local edit before clearing its durable outbox.
 
 ABCM Sync does not promise background networking while Obsidian is suspended or closed on iPadOS. Durable cursor/outbox state resumes when the app becomes active again.
 
