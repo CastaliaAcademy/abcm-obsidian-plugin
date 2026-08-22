@@ -14,6 +14,10 @@ import {
 	pairDevice,
 } from './pairing/pairing-service';
 import {
+	pairingScopeBinding,
+	pairingScopeMatches,
+} from './pairing/scope-binding';
+import {
 	DEVICE_CREDENTIAL_SECRET_ID,
 	normalizeSettings,
 	validateSettings,
@@ -39,6 +43,7 @@ import {
 } from './sync';
 
 const LOCAL_STATE_KEY = 'abcm-sync-state-v1';
+const LOCAL_SCOPE_KEY = 'abcm-sync-scope-v1';
 
 type SyncStatus =
 	| 'synced'
@@ -138,6 +143,8 @@ export default class AbcmSyncPlugin extends Plugin {
 			},
 		);
 		this.settings = { ...next, paused: false };
+		const scope = pairingScopeBinding(this.settings);
+		if (scope !== null) this.app.saveLocalStorage(LOCAL_SCOPE_KEY, scope);
 		this.retryAttempt = 0;
 		this.clearRetry();
 		this.setStatus('synced');
@@ -308,6 +315,14 @@ export default class AbcmSyncPlugin extends Plugin {
 	}
 
 	private loadSyncState(): PersistedSyncState {
+		const scope = pairingScopeBinding(this.settings);
+		const storedScope: unknown = this.app.loadLocalStorage(LOCAL_SCOPE_KEY);
+		if (scope !== null && !pairingScopeMatches(storedScope, scope)) {
+			const initial = createInitialSyncState();
+			this.app.saveLocalStorage(LOCAL_STATE_KEY, initial);
+			this.app.saveLocalStorage(LOCAL_SCOPE_KEY, scope);
+			return initial;
+		}
 		const stored: unknown = this.app.loadLocalStorage(LOCAL_STATE_KEY);
 		return stored === null ? createInitialSyncState() : hydrateSyncState(stored);
 	}
