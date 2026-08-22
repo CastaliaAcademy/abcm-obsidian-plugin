@@ -153,7 +153,7 @@ export class AbcmSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Re-pair device')
-			.setDesc('Clear the current device credential while preserving local synchronization state for safe recovery.')
+			.setDesc('Clear the credential while preserving sync state for the same project. Pairing another project safely resets that state.')
 			.addButton((button) =>
 				button.setButtonText('Clear authorization').setWarning().onClick(async () => {
 					await this.plugin.rePair();

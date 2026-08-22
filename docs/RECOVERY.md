@@ -6,7 +6,7 @@ Leave the plugin enabled. It preserves the cursor and durable outbox and retries
 
 ## Revoked or expired authorization
 
-The status becomes `auth-required` and synchronization pauses without deleting vault files, cursor, or outbox. Create a new server-side pairing code, select **Re-pair device**, and pair again. Do not paste an administrative ABCM token into plugin settings.
+The status becomes `auth-required` and synchronization pauses without deleting vault files, cursor, or outbox. Create a new server-side pairing code, select **Re-pair device**, and pair again. The plugin retains the assigned scope while authorization is cleared: pairing the same scope resumes the durable state, while a grant for another workspace, project, or prefix resets that state before the new credential is stored. Do not paste an administrative ABCM token into plugin settings.
 
 ## Expired cursor
 
